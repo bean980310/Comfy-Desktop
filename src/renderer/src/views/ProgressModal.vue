@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Check, X, TriangleAlert, ChevronDown } from 'lucide-vue-next'
+import { Check, X, TriangleAlert, ChevronDown, ArrowLeft, RefreshCcw } from 'lucide-vue-next'
 import { useModal } from '../composables/useModal'
+import { useReturnToDashboardConfirm, type ReturnToDashboardReason } from '../composables/useReturnToDashboardConfirm'
+import { useInstallationStore } from '../stores/installationStore'
+import { emitTelemetryAction } from '../lib/telemetry'
 
 import { useTerminalScroll } from '../composables/useTerminalScroll'
 import { useProgressStore } from '../stores/progressStore'
@@ -28,6 +31,8 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const modal = useModal()
 const progressStore = useProgressStore()
+const installationStore = useInstallationStore()
+const { confirmReturnToDashboard } = useReturnToDashboardConfirm()
 
 const currentId = ref<string | null>(null)
 const resolvingConflict = ref(false)
@@ -434,6 +439,7 @@ function startOperation(opts: {
   cancellable?: boolean
   returnTo?: string
   opKind?: ShowProgressOpts['opKind']
+  destroysInstance?: boolean
 }): void {
   currentId.value = opts.installationId
   resolvingConflict.value = false
@@ -460,35 +466,96 @@ watch(
   }
 )
 
-/** Minimize: close the takeover but leave the op running on
- *  `progressStore`. The dashboard's in-flight surfaces (chooser tile
- *  progress pill, MigrationBanner "View progress") let the user re-
- *  open the loader; `handleShowProgress`'s existing-op branch in
- *  `usePanelOverlays` re-attaches ProgressModal to the live op when
- *  they do, so no state is lost. */
-function handleMinimize(): void {
-  emit('close')
-}
-
 function handleDone(): void {
   const id = displayId.value
   if (!id) return
   const op = progressStore.operations.get(id)
   if (!op?.result) return
+  // Destroy ops: detach the host (no-op if not install-backed) before
+  // closing the takeover, so a delete that finished against the install
+  // currently backing this window doesn't leave the host pointing at a
+  // now-removed install.
+  if (op.destroysInstance) {
+    void window.api.returnToDashboard()
+  }
   emit('close')
-  if (op.returnTo === 'detail' || op.result.navigate === 'detail') {
+  // Guard show-detail against a stale install id — destroy ops (or any
+  // op whose success removes the install from the registry) would
+  // otherwise route to a now-missing detail view.
+  const installStillExists = !!installationStore.getById(id)
+  if (
+    installStillExists &&
+    (op.returnTo === 'detail' || op.result.navigate === 'detail')
+  ) {
     emit('show-detail', id)
   } else if (op.result.mode === 'console') {
     emit('show-console', id)
   }
 }
 
-/** Error exit for any op: close the loader and let the host return
- *  the user to wherever they came from. The install may already be
- *  gone (delete on success → list view underneath), so a
- *  `show-detail` would route to a stale view. The host's `close`
- *  listener handles teardown. */
-function handleBackToDashboard(): void {
+/** Return-to-Dashboard from any op state. In-flight runs the
+ *  shared confirm (local installs are prompted because returning stops a
+ *  running ComfyUI); error / finished states skip the prompt because
+ *  the install is already idle. Closes the takeover and, if the
+ *  current window is install-backed, flips it back to chooser mode in
+ *  place via the panel IPC. */
+async function returnToDashboard(reason: ReturnToDashboardReason): Promise<void> {
+  const id = displayId.value
+  const op = id ? progressStore.operations.get(id) : null
+  const installation = id ? (installationStore.getById(id) ?? null) : null
+  // confirmReturnToDashboard is a no-op for the crashed / finished branches —
+  // only the in-flight footer button can actually surface the prompt.
+  const ok = await confirmReturnToDashboard(installation, reason)
+  if (!ok) return
+  // Cancel the in-flight op so it doesn't keep running in the background.
+  if (reason === 'in_flight' && op && !op.finished && id) {
+    progressStore.cancelOperation(id)
+  }
+  emitTelemetryAction('desktop2.instance.return_to_dashboard', { from: 'progress', reason })
+  emit('close')
+  // No-op when the calling host isn't install-backed (chooser host
+  // launches that errored before the swap).
+  await window.api.returnToDashboard()
+}
+
+/** Re-run the same op that just errored. Mirrors the port-conflict
+ *  retry pattern: feed the stored `apiCall` (or, for legacy launch
+ *  ops without one, fall back to a fresh `runAction('launch')`) back
+ *  into `startOperation`. */
+function handleReboot(): void {
+  const id = displayId.value
+  if (!id) return
+  const op = progressStore.operations.get(id)
+  if (!op) return
+  startOperation({
+    installationId: id,
+    title: op.title,
+    apiCall: op.apiCall || (() => window.api.runAction(id, 'launch')),
+    returnTo: op.returnTo,
+    opKind: op.opKind,
+    destroysInstance: op.destroysInstance,
+  })
+}
+
+/** Cancel an in-flight destroy op. Gated by the same local-install
+ *  confirm helper for consistency (a delete-in-flight cancel still
+ *  leaves the install in an unknown partial state, so the prompt is
+ *  worth the friction). Closes the takeover after main acknowledges
+ *  the cancel — the destroy op leaves the host in its current state
+ *  rather than auto-detaching. */
+async function cancelDestructiveOp(): Promise<void> {
+  const id = displayId.value
+  if (!id) return
+  const op = progressStore.operations.get(id)
+  if (!op || op.finished) return
+  const installation = installationStore.getById(id) ?? null
+  const ok = await confirmReturnToDashboard(installation, 'in_flight')
+  if (!ok) return
+  emitTelemetryAction('desktop2.instance.return_to_dashboard', {
+    from: 'progress',
+    reason: 'in_flight',
+  })
+  progressStore.cancelOperation(id)
   emit('close')
 }
 
@@ -763,20 +830,18 @@ defineExpose({ startOperation, showOperation })
          row pins to the takeover's bottom edge without crowding the
          caption / banner area above. Same geometry as
          NewInstallModal's Configure footer.
-         • In-flight → Minimize. Closes the takeover but leaves the
-           op running on `progressStore`; the dashboard's existing
-           in-flight detection (chooser tile progress pill,
-           MigrationBanner "View progress") surfaces the re-open path,
-           and `handleShowProgress`'s existing-op branch re-attaches
-           ProgressModal when the user comes back.
+         • In-flight → Return to Dashboard (shared confirm gates
+           local installs because returning cancels the running op /
+           ComfyUI). Cancels the op then flips the host back to
+           chooser mode in place.
          • Port conflict → up to two source-driven actions:
            Use port N (when main suggested a next port) and Kill
            process (when the offender is itself a ComfyUI process).
            `handleUseNextPort` / `handleKillProcess` restart the op
            with the appropriate fix and flip `resolvingConflict`, which
            collapses the conflict UI back to the running state.
-         • Error → Back to dashboard (Copy-error sibling lands in
-           Phase 2.5).
+         • Error → Reboot (re-runs the same `apiCall`) + Return to
+           Dashboard.
          Success / cancelled auto-close after a short delay so no
          buttons render then — the band collapses to zero height. -->
     <template #footer>
@@ -791,11 +856,22 @@ defineExpose({ startOperation, showOperation })
       >
         <template v-if="!currentOp.finished">
           <button
+            v-if="currentOp.destroysInstance"
             type="button"
             class="brand-ghost brand-progress__footer-btn"
-            @click="handleMinimize"
+            @click="cancelDestructiveOp"
           >
-            {{ $t('progress.minimize') }}
+            <X :size="16" />
+            {{ $t('common.cancel') }}
+          </button>
+          <button
+            v-else
+            type="button"
+            class="brand-ghost brand-progress__footer-btn"
+            @click="returnToDashboard('in_flight')"
+          >
+            <ArrowLeft :size="16" />
+            {{ $t('progress.returnToDashboard') }}
           </button>
         </template>
         <template v-else-if="isPortConflictOpen && currentOp.result?.portConflict">
@@ -822,11 +898,25 @@ defineExpose({ startOperation, showOperation })
         </template>
         <template v-else>
           <button
+            v-if="!currentOp.destroysInstance"
             type="button"
             class="brand-primary brand-progress__footer-btn"
-            @click="handleBackToDashboard"
+            @click="handleReboot"
           >
-            {{ $t('common.backToDashboard') }}
+            <RefreshCcw :size="16" />
+            {{ $t('progress.reboot') }}
+          </button>
+          <button
+            type="button"
+            :class="
+              currentOp.destroysInstance
+                ? 'brand-primary brand-progress__footer-btn'
+                : 'brand-ghost brand-progress__footer-btn'
+            "
+            @click="returnToDashboard('crashed')"
+          >
+            <ArrowLeft :size="16" />
+            {{ $t('progress.returnToDashboard') }}
           </button>
         </template>
       </div>

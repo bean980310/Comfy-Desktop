@@ -82,6 +82,8 @@ export function buildElectronApi(): ElectronApi {
       ipcRenderer.invoke('close-comfy-window', installationId),
     closeHostWindow: () =>
       ipcRenderer.invoke('close-host-window'),
+    returnToDashboard: () =>
+      ipcRenderer.invoke('return-to-dashboard'),
     closeCurrentPanel: () =>
       ipcRenderer.send('comfy-window:close-current-panel'),
     openGlobalSettings: () =>
@@ -118,10 +120,23 @@ export function buildElectronApi(): ElectronApi {
       ipcRenderer.send('comfy-window:request-close-response', payload),
     ackCloseRequest: (payload) =>
       ipcRenderer.send('comfy-window:request-close-ack', payload),
+    onReturnToDashboardRequest: (callback) => {
+      const handler = (_event: IpcRendererEvent, data: unknown) =>
+        callback(data as { requestId: string })
+      ipcRenderer.on('comfy-window:request-return-to-dashboard', handler)
+      return () =>
+        ipcRenderer.removeListener('comfy-window:request-return-to-dashboard', handler)
+    },
+    respondReturnToDashboardRequest: (payload) =>
+      ipcRenderer.send('comfy-window:request-return-to-dashboard-response', payload),
+    ackReturnToDashboardRequest: (payload) =>
+      ipcRenderer.send('comfy-window:request-return-to-dashboard-ack', payload),
     transferHostBoundsToInstall: (installationId) =>
       ipcRenderer.invoke('transfer-host-bounds-to-install', installationId),
     claimAttachHost: (installationId) =>
       ipcRenderer.invoke('claim-attach-host', installationId),
+    releaseAttachHostPreview: () =>
+      ipcRenderer.invoke('release-attach-host-preview'),
     getRunningInstances: () => ipcRenderer.invoke('get-running-instances'),
     getLastCrashError: (installationId: string) =>
       ipcRenderer.invoke('get-last-crash-error', installationId),

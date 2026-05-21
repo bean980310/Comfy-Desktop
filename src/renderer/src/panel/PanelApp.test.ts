@@ -280,6 +280,10 @@ function installMockApi(initial?: {
     onCloseRequest: vi.fn(() => () => {}),
     respondCloseRequest: vi.fn(),
     ackCloseRequest: vi.fn(),
+    // Symmetric mock pair for the File menu's Return to Dashboard consult.
+    onReturnToDashboardRequest: vi.fn(() => () => {}),
+    respondReturnToDashboardRequest: vi.fn(),
+    ackReturnToDashboardRequest: vi.fn(),
     // Title-bar Settings icon → main routes a drawer-close request here
     // so the ComfyUISettingsPanel can play its leave animation before
     // closeCurrentPanel collapses the panelView. The test suite never
@@ -318,6 +322,7 @@ function installMockApi(initial?: {
     // the existing `complete-cloud` test continues to dismiss cleanly
     // when no cloud install is present in the store.
     claimAttachHost: vi.fn(async () => true),
+    releaseAttachHostPreview: vi.fn(async () => true),
     transferHostBoundsToInstall: vi.fn(async () => {}),
     closeHostWindow: vi.fn(async () => {}),
     focusComfyWindow: vi.fn(async () => {}),

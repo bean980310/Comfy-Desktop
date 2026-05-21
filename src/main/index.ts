@@ -63,16 +63,17 @@ import {
   applyChooserHostThemeToAll,
   createHostWindow,
   expectedPartitionFor,
-  loadTitleBarUrl,
   openChooserHostWindow,
   rebuildComfyViewIfNeeded,
   setHostWindowFactories,
 } from './host/createHostWindow'
 import { attachInstall, setAttachFactories } from './host/attach'
+import { applyAttachHostPreview, clearAttachHostPreview } from './host/attachHostPreview'
 import {
   _detachInstallImpl,
   confirmAndCloseAllHostWindows,
   consultPanelRendererClose,
+  detachOrphanedInstallHosts,
   preClearedClose,
   returnToDashboard,
 } from './host/detach'
@@ -348,13 +349,12 @@ function onLaunch({ port, url, process: proc, installation, mode }: {
       isChooserHost(claimed)
     ) {
       rebuildComfyViewIfNeeded(claimed, installation)
-      // Re-navigate the title-bar so its URL carries the new install id;
-      // the renderer reads `installationId` once at startup, so without
-      // this re-load `isInstallLess` would stay `true` and the install
-      // pill would render in chooser-mode shape. The title-bar-ready
-      // handshake re-fires after the navigation lands and re-pushes
-      // title text / source category / theme / install-update pill.
-      loadTitleBarUrl(claimed.titleBarView, installationId)
+      // No title-bar URL reload here — `attachInstall` pushes the new
+      // installationId via `comfy-titlebar:installation-id-changed` and
+      // the renderer's `isInstallLess` is reactive on that channel.
+      // Keeping the long-lived title-bar webContents avoids the
+      // blank-then-rehydrate flicker the URL reload used to cause
+      // between preview identity and the post-attach steady state.
       // Drop the chooser PanelApp before the install takes over the
       // host. The chooser pick flow runs the launch action through a
       // Tier 2 progress overlay mounted on this panel; once the
@@ -771,6 +771,26 @@ ipcMain.handle('close-host-window', (event) => {
 })
 
 /**
+ * Flip the install-backed host window that owns the calling panel
+ * WebContents back to chooser mode in place (same window, same bounds).
+ * Returns `true` when an install-backed entry was found and detached.
+ *
+ * Used by panel-side surfaces (ProgressModal Return-to-Dashboard,
+ * ComfyLifecycleView, etc.) to send the user back to the dashboard
+ * without closing the window.
+ */
+ipcMain.handle('return-to-dashboard', (event) => {
+  for (const [, entry] of comfyWindows) {
+    if (entry.window.isDestroyed()) continue
+    if (!isInstallHost(entry)) continue
+    if (entry.panelView?.webContents !== event.sender) continue
+    entry.detachInstall()
+    return true
+  }
+  return false
+})
+
+/**
  * Stake an in-place attach claim from a chooser-host renderer. When
  * the launch event subsequently lands in `onLaunch()`, the matching
  * `consumeAttachClaim()` call rebuilds the comfyView's partition if
@@ -792,6 +812,32 @@ ipcMain.handle('claim-attach-host', (event, installationId: string) => {
     if (isInstallHost(entry)) continue
     if (entry.panelView?.webContents !== event.sender) continue
     claimAttachHost(installationId, entry.windowKey)
+    // Push the install's identity to the title bar immediately so the
+    // user can see which install is being acted on while the op runs;
+    // attachInstall later overwrites with the same values, so there's
+    // no flicker on the happy path.
+    void applyAttachHostPreview(entry, installationId)
+    return true
+  }
+  return false
+})
+
+/**
+ * Release the in-progress install identity preview on the calling
+ * chooser host. Fired by the panel renderer when an overlay (progress
+ * / takeover) closes without producing an attach — the op was
+ * cancelled, errored, or the user backed out — so the title bar
+ * reverts to the chooser-host identity.
+ *
+ * No-op when the calling sender isn't an install-less host's panel
+ * webContents, or when no preview is currently active.
+ */
+ipcMain.handle('release-attach-host-preview', (event) => {
+  for (const [, entry] of comfyWindows) {
+    if (entry.window.isDestroyed()) continue
+    if (isInstallHost(entry)) continue
+    if (entry.panelView?.webContents !== event.sender) continue
+    clearAttachHostPreview(entry)
     return true
   }
   return false
@@ -1256,6 +1302,20 @@ if (app.isPackaged && !app.requestSingleInstanceLock()) {
     // so it survives chooser-host / comfy-window churn.
     installationEvents.on('changed', () => {
       _broadcastToRenderer('installations-changed', {})
+    })
+
+    // Auto-detach install-backed host windows whose install has been
+    // removed from the registry (delete-action or untrack-action). Without
+    // this, an install-backed host would keep rendering chrome / IPC
+    // wiring for a non-existent install, leading to broken state on the
+    // next reload and dangling references in the title-bar / panel. The
+    // hook is generic — any future removal path is covered by the same
+    // registry-membership check.
+    installationEvents.on('changed', () => {
+      void (async () => {
+        const liveIds = new Set((await listInstallations()).map((i) => i.id))
+        detachOrphanedInstallHosts(liveIds)
+      })()
     })
   })
 

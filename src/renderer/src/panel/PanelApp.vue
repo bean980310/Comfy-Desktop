@@ -18,7 +18,9 @@ import { useInstallationStore } from '../stores/installationStore'
 import { seedLauncherPrefsFromUrl, useLauncherPrefs } from '../composables/useLauncherPrefs'
 import { useModal } from '../composables/useModal'
 import { useAppUpdatePrompts } from '../composables/useAppUpdatePrompts'
+import { useReturnToDashboardConfirm } from '../composables/useReturnToDashboardConfirm'
 import { useSendFeedback } from '../composables/useSendFeedback'
+import { emitTelemetryAction } from '../lib/telemetry'
 import { useDeepLinkRouter } from '../composables/useDeepLinkRouter'
 import { useInstallContextMenu } from '../composables/useInstallContextMenu'
 import { registerMigrateTakeover } from '../composables/useMigrateAction'
@@ -161,15 +163,32 @@ chooserHandoff = useChooserHandoff({
 })
 const { handleChooserPick, handleChooserShowNewInstall } = chooserHandoff
 
+// When an overlay closes on a chooser host without producing an attach
+// (cancel / error / dismiss), revert the install identity preview that
+// `claimAttachHost` pushed to the title bar — otherwise the chooser host
+// keeps showing the last-attempted install's name. On a successful
+// attach the chooser PanelApp tears down before this watcher fires, so
+// the happy path never triggers a release.
+if (!installationId) {
+  watch(currentOverlay, (next, prev) => {
+    if (prev && !next) {
+      void window.api.releaseAttachHostPreview()
+    }
+  })
+}
+
 let unsubPanel: (() => void) | null = null
 let unsubLocale: (() => void) | null = null
 let unsubCloseRequest: (() => void) | null = null
+let unsubReturnToDashboardRequest: (() => void) | null = null
 let unsubAppUpdatePromptRestart: (() => void) | null = null
 let unsubAppUpdateUserActionFailed: (() => void) | null = null
 type PickerTab = 'config' | 'status' | 'update' | 'snapshots'
 const PICKER_TABS: ReadonlySet<PickerTab> = new Set(['config', 'status', 'update', 'snapshots'])
 const isPickerTab = (t: string | undefined): t is PickerTab =>
   t !== undefined && PICKER_TABS.has(t as PickerTab)
+
+const { confirmReturnToDashboard } = useReturnToDashboardConfirm()
 
 // All Manage routes go through `window.api.openInstancePicker` — the picker's
 // expanded mode is the single per-install settings surface. Delete keeps its
@@ -303,6 +322,49 @@ onMounted(async () => {
     })()
   })
 
+  // File menu's "Return to Dashboard" consult. Layered:
+  //   - In-flight overlay → tier-aware cancel-prompt via `closeOverlay`.
+  //   - No overlay + local install → "Stop ComfyUI?" confirm so the
+  //     user knows the running session is about to be stopped.
+  // Cloud / remote installs (and chooser hosts) clear silently.
+  unsubReturnToDashboardRequest = window.api.onReturnToDashboardRequest(({ requestId }) => {
+    window.api.ackReturnToDashboardRequest({ requestId })
+    void (async () => {
+      // The inner await chain is wrapped so a thrown / rejected confirm doesn't
+      // strand main waiting forever on the response; the catch returns a
+      // default `cleared: false` and the response always fires below.
+      const { cleared, reason } = await (async (): Promise<{
+        cleared: boolean
+        reason: 'in_flight' | 'running' | 'stopped' | 'crashed'
+      }> => {
+        try {
+          if (currentOverlay.value !== null) {
+            return { cleared: await closeOverlay(), reason: 'in_flight' }
+          }
+          const id = installationId
+          const inst = id ? (installationStore.getById(id) ?? null) : null
+          const r: 'running' | 'crashed' | 'stopped' =
+            id && sessionStore.isRunning(id)
+              ? 'running'
+              : id && sessionStore.errorInstances.has(id)
+                ? 'crashed'
+                : 'stopped'
+          return { cleared: await confirmReturnToDashboard(inst, r), reason: r }
+        } catch (err) {
+          console.error('return-to-dashboard consult failed', err)
+          return { cleared: false, reason: 'stopped' }
+        }
+      })()
+      if (cleared) {
+        emitTelemetryAction('desktop2.instance.return_to_dashboard', {
+          from: 'menu',
+          reason,
+        })
+      }
+      window.api.respondReturnToDashboardRequest({ requestId, cleared })
+    })()
+  })
+
   // Auto-fire the restart prompt when an auto-off user-initiated
   // download finishes — closes the loop on the single-gesture flow
   // (Download → wait → Restart) without forcing the user to find the
@@ -381,6 +443,7 @@ onUnmounted(() => {
   unsubPanel?.()
   unsubLocale?.()
   unsubCloseRequest?.()
+  unsubReturnToDashboardRequest?.()
   unsubAppUpdatePromptRestart?.()
   unsubAppUpdateUserActionFailed?.()
   // Strip the overlay-mode class so HMR / view reload / host teardown

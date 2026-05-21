@@ -9,7 +9,12 @@
     "migrateBannerTitle": "Migrate to Standalone",
     "migrateBannerDesc": "Your Legacy Desktop installation was detected. Migrate to a Standalone install for better performance, easier updates, and full Desktop 2.0 management.",
     "migrateBannerAction": "Migrate Now",
-    "migrateBannerSkip": "New Install Without Migrating"
+    "migrateBannerSkip": "New Install Without Migrating",
+    "confirmStopLocal": {
+      "title": "Return to Dashboard?",
+      "message": "ComfyUI for this installation will be stopped.",
+      "confirmLabel": "Stop & Return"
+    }
   },
 
   "installType": {
@@ -84,6 +89,7 @@
     "crashedDetailsToggle": "Show error log",
     "start": "Start ComfyUI",
     "restart": "Restart ComfyUI",
+    "returnToDashboard": "Return to Dashboard",
     "launchProgressTitle": "Starting ComfyUI"
   },
 
@@ -308,7 +314,8 @@
     "completedSuccess": "Completed successfully",
     "completedError": "Operation failed",
     "completedCancelled": "Operation was cancelled",
-    "minimize": "Minimize",
+    "returnToDashboard": "Return to Dashboard",
+    "reboot": "Reboot",
     "phaseLabel": {
       "download": "Downloading ComfyUI…",
       "extract": "Unpacking the install…",

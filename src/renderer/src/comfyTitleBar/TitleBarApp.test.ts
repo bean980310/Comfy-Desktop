@@ -23,6 +23,8 @@ interface MockBridgeState {
   menuOpenedCallbacks: ((info: { menu: 'menu' }) => void)[]
   menuClosedCallbacks: ((info: { menu: 'menu' }) => void)[]
   firstUseModeChangedCallbacks: ((mode: 'none' | 'consent-lockdown' | 'post-consent') => void)[]
+  previewModeChangedCallbacks: ((preview: boolean) => void)[]
+  installationIdChangedCallbacks: ((installationId: string | null) => void)[]
   appUpdateStateCallbacks: ((state: {
     kind: 'available' | 'ready' | null
     version: string | null
@@ -54,6 +56,8 @@ function installMockBridge(opts: { isMac?: boolean; installationId?: string | nu
     menuOpenedCallbacks: [],
     menuClosedCallbacks: [],
     firstUseModeChangedCallbacks: [],
+    previewModeChangedCallbacks: [],
+    installationIdChangedCallbacks: [],
     appUpdateStateCallbacks: [],
     installUpdateAvailableCallbacks: [],
     downloadsChangedCallbacks: [],
@@ -108,6 +112,14 @@ function installMockBridge(opts: { isMac?: boolean; installationId?: string | nu
     },
     onFirstUseModeChanged: (cb: (mode: 'none' | 'consent-lockdown' | 'post-consent') => void) => {
       state.firstUseModeChangedCallbacks.push(cb)
+      return () => { }
+    },
+    onPreviewModeChanged: (cb: (preview: boolean) => void) => {
+      state.previewModeChangedCallbacks.push(cb)
+      return () => { }
+    },
+    onInstallationIdChanged: (cb: (installationId: string | null) => void) => {
+      state.installationIdChangedCallbacks.push(cb)
       return () => { }
     },
     onAppUpdateStateChanged: (

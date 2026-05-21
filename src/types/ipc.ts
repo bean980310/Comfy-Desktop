@@ -241,6 +241,17 @@ export interface ShowProgressOpts {
    *  model libraries…") which read as wrong copy. Falls back to
    *  `'generic'` when omitted so legacy callers keep working. */
   opKind?: 'launch' | 'install' | 'update' | 'destructive' | 'snapshot' | 'generic'
+  /** Set on ops that remove the install from the registry as a
+   *  successful side-effect (today: the install-level delete action).
+   *  Drives three carve-outs on top of the standard takeover flow:
+   *    - skip the chooser-host claim (host stays in the initiating
+   *      window — nothing meaningful to attach when the install is
+   *      about to vanish),
+   *    - in-flight footer swaps Return-to-Dashboard for Cancel,
+   *    - on success the host auto-detaches before the takeover closes,
+   *    - on error only Return-to-Dashboard renders (no Reboot — the
+   *      install state is undefined after a partial destroy). */
+  destroysInstance?: boolean
   /** Raw action identity, included so a host that can't run the closure
    *  itself (the picker popup) can forward the request to one that can
    *  (the panel) and have it rebuild `apiCall`. Drawer/panel callers
@@ -831,6 +842,13 @@ export interface ElectronApi {
    *  host window after a successful pick → launch hand-off.
    *  Returns true if a window was found and closed. */
   closeHostWindow(): Promise<boolean>
+  /** Flip the install-backed host window containing the calling panel
+   *  WebContents back to chooser mode in place — same BrowserWindow,
+   *  same bounds, same window-key; the install binding is torn down
+   *  (running ComfyUI stopped, listeners off, comfyView navigated to
+   *  about:blank) and the title bar repaints to the chooser identity.
+   *  Returns true when an install-backed entry was found and detached. */
+  returnToDashboard(): Promise<boolean>
   /** Page X-close (Settings / Directories / Install Settings header).
    *  Asks main to reset the panel-history stack and return the body to
    *  the comfy/chooser root. Fire-and-forget; the panel will receive
@@ -895,6 +913,20 @@ export interface ElectronApi {
    *  acked main waits indefinitely for the actual response (the user
    *  may take their time on the cancel-prompt). */
   ackCloseRequest(payload: { requestId: string }): void
+  /** Main consults the panel renderer before flipping an install-backed
+   *  host window back to the dashboard (File menu Return to Dashboard).
+   *  The renderer layers the Tier 2/3 cancel-prompt on top of the
+   *  local-install "Stop ComfyUI?" confirm and echoes the result back
+   *  via `respondReturnToDashboardRequest`. */
+  onReturnToDashboardRequest(callback: (data: { requestId: string }) => void): Unsubscribe
+  /** Reply to a `comfy-window:request-return-to-dashboard` consult —
+   *  `cleared: true` lets main detach the install, `cleared: false`
+   *  aborts. */
+  respondReturnToDashboardRequest(payload: { requestId: string; cleared: boolean }): void
+  /** Sent immediately on receiving the return-to-dashboard request so
+   *  main extends its hung-renderer timeout while the renderer prompts
+   *  the user. Symmetric with `ackCloseRequest`. */
+  ackReturnToDashboardRequest(payload: { requestId: string }): void
   /** Stamp the calling chooser host window's current bounds onto the
    *  install's saved-bounds slot (visual continuity). Fallback wiring
    *  for `claimAttachHost` rejections (e.g. the install uses
@@ -912,6 +944,14 @@ export interface ElectronApi {
    *  panelView, or main rejected the claim — fall back to the
    *  close+open swap). */
   claimAttachHost(installationId: string): Promise<boolean>
+  /** Release the in-progress install identity preview that
+   *  `claimAttachHost` installed on this chooser host's title bar.
+   *  Fired by the panel renderer when an overlay (progress / takeover)
+   *  closes without producing an attach — the op was cancelled,
+   *  errored, or the user backed out — so the title bar reverts to
+   *  the chooser-host identity. No-op for install-backed callers and
+   *  for chooser hosts with no preview currently active. */
+  releaseAttachHostPreview(): Promise<boolean>
   getRunningInstances(): Promise<RunningInstance[]>
   /**
    * Read the retained crash detail for an installation, if any. Main holds
