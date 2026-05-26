@@ -35,6 +35,7 @@ import {
   hideTitleTooltipPopup,
 } from './titleTooltip'
 import { EmbeddedPopupView } from './embeddedPopupView'
+import { recordIpcInvocation } from '../lib/e2eOverrides'
 
 /**
  * Title-bar dropdown popups (waffle menu, downloads tray). All title-bar
@@ -2195,6 +2196,7 @@ export function registerTitlePopupIpc(bindings: TitlePopupHostBindings): void {
         }
         | undefined,
     ) => {
+      recordIpcInvocation('comfy-window:open-instance-picker-for-install', payload)
       const win = BrowserWindow.fromWebContents(event.sender)
       if (!win || win.isDestroyed()) return
       let parentEntryId: number | undefined
@@ -2554,6 +2556,7 @@ export function registerTitlePopupIpc(bindings: TitlePopupHostBindings): void {
   // the `comfy://open-settings?tab=global` deep link, both of which
   // previously opened the legacy SettingsModal overlay.
   ipcMain.on('comfy-titlepopup:open-global-settings', (event) => {
+    recordIpcInvocation('comfy-titlepopup:open-global-settings')
     const win = BrowserWindow.fromWebContents(event.sender)
     if (!win || win.isDestroyed()) return
     let parentEntryId: number | undefined
