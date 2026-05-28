@@ -44,7 +44,7 @@ import { titleBarOverlayForTheme } from './lib/titleBarOverlay'
 import {
   sourceMap, _broadcastToRenderer, _runningSessions,
   _operationAborts, _activeOperationStatus, stopRunning,
-  resolveTheme,
+  resolveTheme, MSG_CANCELLED,
   type PickerOperationStatus,
 } from './lib/ipc/shared'
 import { enrichInstallationsForRenderer } from './lib/ipc/registerInstallationHandlers'
@@ -77,7 +77,7 @@ import {
 } from './host/createHostWindow'
 import { attachInstall, setAttachFactories } from './host/attach'
 import { IN_PLACE_RELAUNCH, REQUIRES_STOPPED } from '../types/ipc'
-import { handleDelegateToSource, handleLaunch } from './lib/ipc/sessionActions'
+import { dispatchSessionAction, handleLaunch } from './lib/ipc/sessionActions'
 import { applyAttachHostPreview, clearAttachHostPreview } from './host/attachHostPreview'
 import {
   _detachInstallImpl,
@@ -1226,7 +1226,7 @@ if (app.isPackaged && !app.requestSingleInstanceLock()) {
 
           let result: PickerOperationStatus
           try {
-            const actionResult = await handleDelegateToSource(
+            const actionResult = await dispatchSessionAction(
               { event: stubEvent, installationId, inst, actionData },
               actionId,
             )
@@ -1236,17 +1236,26 @@ if (app.isPackaged && !app.requestSingleInstanceLock()) {
               const freshInst = await getInstallation(installationId) ?? inst
               await handleLaunch({ event: stubEvent, installationId, inst: freshInst, actionData: undefined })
             }
+            // `actionResult.cancelled === true` is the user-cancel
+            // signal from handlers that route through
+            // `withAbortableSessionAction`. Map it to `MSG_CANCELLED`
+            // (the single string the renderer's inline-picker progress
+            // card matches on) so the user sees a "Cancelled" banner
+            // instead of a misleading success state.
+            const wasCancelled = actionResult.cancelled === true
             result = {
-              status: '', percent: 100, done: true,
-              ok: actionResult.ok !== false,
-              error: actionResult.ok === false ? (actionResult.message ?? 'Failed.') : null,
+              status: '', percent: wasCancelled ? -1 : 100, done: true,
+              ok: !wasCancelled && actionResult.ok !== false,
+              error: wasCancelled
+                ? MSG_CANCELLED
+                : (actionResult.ok === false ? (actionResult.message ?? 'Failed.') : null),
               cancellable, title, actionId, actionData,
             }
           } catch (err) {
             const abort = _operationAborts.get(installationId)
             result = {
               status: '', percent: -1, done: true, ok: false,
-              error: abort?.signal.aborted ? 'Cancelled.' : ((err as Error).message ?? 'Failed.'),
+              error: abort?.signal.aborted ? MSG_CANCELLED : ((err as Error).message ?? 'Failed.'),
               cancellable, title, actionId, actionData,
             }
           }
