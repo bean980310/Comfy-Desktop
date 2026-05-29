@@ -35,6 +35,10 @@ const messages = {
       relaunch: 'Relaunch',
       more: 'More',
     },
+    tooltips: {
+      snapshots:
+        'A saved point-in-time state of an installation (versions + custom nodes) you can restore later.',
+    },
     instancePicker: {
       open: 'Start',
       restart: 'Restart',
@@ -339,6 +343,104 @@ describe('ComfyUISettingsContent', () => {
       })
       await flushPromises()
       expect(w.find('[data-testid="more-menu"]').exists()).toBe(false)
+    })
+  })
+
+  describe('tab tooltips (#702 concept tooltips + #713 — no redundant label echo)', () => {
+    type ResizeCb = (entries: ResizeObserverEntry[], obs: ResizeObserver) => void
+    interface RoHandle {
+      el: Element
+      fire(width: number): void
+    }
+    let roHandles: RoHandle[]
+    let originalRo: typeof globalThis.ResizeObserver | undefined
+
+    beforeEach(() => {
+      roHandles = []
+      class StubRo {
+        cb: ResizeCb
+        constructor(cb: ResizeCb) {
+          this.cb = cb
+        }
+        observe(el: Element): void {
+          roHandles.push({
+            el,
+            fire: (width: number) => {
+              this.cb(
+                [{ contentRect: { width, height: 44 } as DOMRectReadOnly } as ResizeObserverEntry],
+                this as unknown as ResizeObserver,
+              )
+            },
+          })
+        }
+        disconnect(): void {}
+        unobserve(): void {}
+      }
+      originalRo = (globalThis as { ResizeObserver?: typeof globalThis.ResizeObserver })
+        .ResizeObserver
+      ;(globalThis as { ResizeObserver?: unknown }).ResizeObserver =
+        StubRo as unknown as typeof globalThis.ResizeObserver
+    })
+    afterEach(() => {
+      if (originalRo) {
+        ;(globalThis as { ResizeObserver?: typeof globalThis.ResizeObserver }).ResizeObserver =
+          originalRo
+      } else {
+        delete (globalThis as { ResizeObserver?: typeof globalThis.ResizeObserver }).ResizeObserver
+      }
+    })
+
+    const SNAPSHOTS_TOOLTIP =
+      'A saved point-in-time state of an installation (versions + custom nodes) you can restore later.'
+
+    /** Tooltips for tabs that only echo their label (no explicit concept
+     *  copy). The Snapshots tab carries a real concept tooltip and is
+     *  exempt from the "disabled at full width" rule. */
+    function labelEchoDisabledFlags(w: VueWrapper): boolean[] {
+      return w
+        .findAllComponents({ name: 'Tooltip' })
+        .filter((tt) => tt.props('text') !== SNAPSHOTS_TOOLTIP)
+        .map((tt) => tt.props('disabled') as boolean)
+    }
+
+    it('disables label-echo tab tooltips at full width (label is visible → pure echo)', async () => {
+      const w = await mountContent()
+      roHandles.forEach((h) => h.fire(900))
+      await nextTick()
+      const flags = labelEchoDisabledFlags(w)
+      expect(flags.length).toBeGreaterThan(0)
+      expect(flags.every((d) => d === true)).toBe(true)
+    })
+
+    it('always shows the Snapshots concept tooltip regardless of strip width', async () => {
+      const w = await mountContent({ initialTab: 'snapshots' })
+      const snapshotTip = () =>
+        w
+          .findAllComponents({ name: 'Tooltip' })
+          .find((tt) => tt.props('text') === SNAPSHOTS_TOOLTIP)
+      // Full width — an echo tab would be suppressed here, but the concept
+      // tooltip stays live because it adds info beyond the label.
+      roHandles.forEach((h) => h.fire(900))
+      await nextTick()
+      expect(snapshotTip()?.props('disabled')).toBe(false)
+      // Collapsed — still live (and it's the active tab, which would also
+      // suppress a pure echo).
+      roHandles.forEach((h) => h.fire(300))
+      await nextTick()
+      expect(snapshotTip()?.props('disabled')).toBe(false)
+    })
+
+    it('keeps the tooltip on collapsed icon-only tabs but not the active one', async () => {
+      const w = await mountContent({ initialTab: 'update' })
+      roHandles.forEach((h) => h.fire(300))
+      await nextTick()
+      const tooltips = w.findAllComponents({ name: 'Tooltip' })
+      // Active tab (Update) keeps its label → tooltip stays disabled.
+      const updateTip = tooltips.find((tt) => tt.props('text') === 'Update')
+      expect(updateTip?.props('disabled')).toBe(true)
+      // A collapsed, inactive tab hides its label → tooltip is live.
+      const statusTip = tooltips.find((tt) => tt.props('text') === 'About')
+      expect(statusTip?.props('disabled')).toBe(false)
     })
   })
 
