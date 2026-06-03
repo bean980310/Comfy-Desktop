@@ -8,7 +8,9 @@ import {
   Loader2,
   Menu as MenuIcon,
   MessageSquarePlus,
-  RefreshCw
+  RefreshCw,
+  RotateCw,
+  ZoomIn
 } from 'lucide-vue-next'
 import { useTitleBarTooltip } from './useTitleBarTooltip'
 import { useTitleBarMenus } from './useTitleBarMenus'
@@ -84,6 +86,7 @@ interface Bridge {
    *  install-less host windows; the renderer suppresses the icon in
    *  that case. */
   onSourceCategoryChanged: (cb: (category: string | null) => void) => () => void
+  onZoomChanged: (cb: (level: number) => void) => () => void
   onThemeChanged: (cb: (theme: { bg: string; text: string }) => void) => () => void
   onFullscreenChanged: (cb: (fullscreen: boolean) => void) => () => void
   onMenuOpened: (cb: (info: { menu: 'menu' | 'downloads' }) => void) => () => void
@@ -167,6 +170,11 @@ interface Bridge {
    *  which fires the `desktop2.feedback.opened` telemetry action and
    *  opens the support URL via `openExternal`. */
   clickFeedback: () => void
+  /** Click handler for the cloud-instance refresh button. Re-navigates
+   *  the host's comfyView via the same reload path as F5/Ctrl+R. */
+  clickRefreshInstance: () => void
+  /** Reset the host comfyView's zoom to 100%. */
+  resetZoom: () => void
   ready: () => void
 }
 
@@ -202,12 +210,26 @@ const {
   showBrandMark,
   isLight
 } = useTitleBarIdentity({ bridge, isInstallLess })
-// Mark unused — sourceCategory feeds installTypeMeta inside the
-// composable, but the template doesn't reference it directly.
 // firstUseMode is consumed by isFirstUseLockdown / isConsentLockdown
 // inside the composable; the template only reads the derived booleans.
-void sourceCategory
+
+/** Browser-style refresh button — shown on remote web instances (cloud +
+ *  user-pointed remote ComfyUI), never on local installs, install-less
+ *  hosts, or during first-use lockdown. Clicking re-navigates the remote
+ *  comfyView via the same reload path as F5/Ctrl+R. */
+const showRefreshButton = computed(
+  () =>
+    (sourceCategory.value === 'cloud' || sourceCategory.value === 'remote') &&
+    !isInstallLess.value &&
+    !isFirstUseLockdown.value
+)
 void firstUseMode
+
+const zoomLevel = ref(0)
+const zoomPercent = computed(() => Math.round(Math.pow(1.2, zoomLevel.value) * 100))
+const showZoomReset = computed(
+  () => zoomLevel.value !== 0 && !isInstallLess.value && !isFirstUseLockdown.value
+)
 
 /**
  * Title-bar chrome lockdown. True whenever the bar should collapse to
@@ -238,6 +260,14 @@ const {
  *  entry lands on the same panel-side handler. */
 function handleFeedback(): void {
   bridge?.clickFeedback()
+}
+
+function handleRefreshInstance(): void {
+  bridge?.clickRefreshInstance()
+}
+
+function handleResetZoom(): void {
+  bridge?.resetZoom()
 }
 
 // Icon is ComfyUI-tab only; also visible while the drawer is open so
@@ -439,6 +469,7 @@ watch(downloadsStartedAt, (next) => {
 
 let unsubPanel: (() => void) | undefined
 let unsubInstallationId: (() => void) | undefined
+let unsubZoom: (() => void) | undefined
 
 onMounted(() => {
   // Observe the trailing cluster so the left cluster can mirror its
@@ -477,6 +508,9 @@ onMounted(() => {
   unsubPanel = bridge.onPanelChanged((panel) => {
     activePanel.value = panel
   })
+  unsubZoom = bridge.onZoomChanged((level) => {
+    zoomLevel.value = level
+  })
   unsubInstallationId = bridge.onInstallationIdChanged((installationId) => {
     isInstallLess.value = installationId === null
   })
@@ -505,6 +539,7 @@ onUnmounted(() => {
   unmounted = true
   unsubPanel?.()
   unsubInstallationId?.()
+  unsubZoom?.()
   hideTip()
   trailingObserver?.disconnect()
   trailingObserver = undefined
@@ -569,6 +604,18 @@ onUnmounted(() => {
         @click="handleFileMenu"
       >
         <MenuIcon :size="18" />
+      </button>
+      <!-- Browser-style refresh for remote/cloud instances, right of the
+           hamburger. Re-navigates the comfyView via the same reload path
+           as F5/Ctrl+R. -->
+      <button
+        v-if="showRefreshButton"
+        type="button"
+        class="title-menu-button title-menu-button--icon title-refresh-button"
+        v-bind="tooltipAttrs(t('titleBar.refreshInstanceTooltip'))"
+        @click="handleRefreshInstance"
+      >
+        <RotateCw :size="16" />
       </button>
     </div>
 
@@ -687,15 +734,28 @@ onUnmounted(() => {
         <RefreshCw v-else-if="appUpdateState.kind === 'ready'" :size="14" />
         <span class="title-update-pill-label">{{ appUpdatePillLabel ?? 'Desktop Update' }}</span>
       </button>
+      <!-- Zoom-level pill. Contextual — fades in only when the comfyView
+           is zoomed off 100%; click resets to 100% and it fades out. -->
+      <Transition name="title-zoom-fade">
+        <button
+          v-if="showZoomReset"
+          type="button"
+          class="title-zoom-reset"
+          v-bind="tooltipAttrs(t('titleBar.resetZoomTooltip'))"
+          @click="handleResetZoom"
+        >
+          <ZoomIn :size="14" class="title-zoom-reset-icon" />
+          <span class="title-zoom-reset-percent">{{ zoomPercent }}%</span>
+        </button>
+      </Transition>
       <button
         v-if="!isFirstUseLockdown"
         type="button"
-        class="title-menu-button title-feedback-button"
+        class="title-menu-button title-menu-button--icon title-feedback-button"
         v-bind="tooltipAttrs(t('titleBar.feedbackTooltip'), t('titleBar.feedback'))"
         @click="handleFeedback"
       >
         <MessageSquarePlus :size="16" />
-        <span class="title-feedback-label">{{ t('titleBar.feedback') }}</span>
       </button>
       <!-- Downloads tray. Click opens the title-bar dropdown popup in
            `'downloads'` mode anchored under the button. Distinct
@@ -972,6 +1032,49 @@ onUnmounted(() => {
   border-color: color-mix(in srgb, var(--comfy-yellow) 70%, var(--neutral-700));
   color: var(--neutral-700);
 }
+.title-zoom-reset {
+  -webkit-app-region: no-drag;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--comfy-yellow) 45%, transparent);
+  background: color-mix(in srgb, var(--comfy-yellow) 12%, transparent);
+  color: var(--comfy-yellow);
+  font: inherit;
+  font-size: 11px;
+  line-height: 14px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition:
+    background-color 0.12s,
+    border-color 0.12s;
+}
+.title-zoom-reset-percent {
+  letter-spacing: 0.01em;
+}
+.title-bar.is-hover-active .title-zoom-reset:hover {
+  background: color-mix(in srgb, var(--comfy-yellow) 20%, transparent);
+  border-color: var(--comfy-yellow);
+}
+.title-zoom-reset:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.title-zoom-fade-enter-active,
+.title-zoom-fade-leave-active {
+  transition:
+    opacity 0.16s ease,
+    transform 0.16s ease;
+}
+.title-zoom-fade-enter-from,
+.title-zoom-fade-leave-to {
+  opacity: 0;
+  transform: scale(0.9);
+}
+
 .title-install-caret {
   color: currentColor;
   opacity: 0.7;
@@ -1279,14 +1382,6 @@ onUnmounted(() => {
 
    Tooltips on every pill carry the full label, so icon-only states
    stay accessible without extra markup. */
-
-.title-bar.is-collapsed-feedback .title-feedback-label {
-  display: none;
-}
-.title-bar.is-collapsed-feedback .title-feedback-button {
-  padding: 4px 6px;
-  gap: 0;
-}
 
 /* When the update label collapses the pill drops to a 24×24 circle
    (matching the Settings + other icon-only chrome) instead of staying
