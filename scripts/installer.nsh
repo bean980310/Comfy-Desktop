@@ -160,7 +160,7 @@
       #   Retry  -> loop back to vcRedistAttempt (re-show the UAC prompt)
       #   Ignore -> jump past, install without the redist
       #   Abort  -> fall through to Quit (also the silent-install default)
-      MessageBox MB_ABORTRETRYIGNORE|MB_ICONEXCLAMATION "ComfyUI Desktop needs the Microsoft Visual C++ Redistributable. Installing it requires Windows permission, and that prompt was declined.$\n$\nRetry — show the permission prompt again (recommended)$\nIgnore — install ComfyUI anyway (it may not start until the Redistributable is installed)$\nAbort — stop and exit Setup" /SD IDABORT IDRETRY vcRedistAttempt IDIGNORE vcRedistIgnore
+      MessageBox MB_ABORTRETRYIGNORE|MB_ICONEXCLAMATION "Comfy Desktop needs the Microsoft Visual C++ Redistributable. Installing it requires Windows permission, and that prompt was declined.$\n$\nRetry — show the permission prompt again (recommended)$\nIgnore — install ComfyUI anyway (it may not start until the Redistributable is installed)$\nAbort — stop and exit Setup" /SD IDABORT IDRETRY vcRedistAttempt IDIGNORE vcRedistIgnore
       SetErrorLevel 2
       Quit
     ${EndIf}
@@ -175,7 +175,7 @@
   ${EndIf}
 
   DetailPrint ""
-  DetailPrint "Step 2 of 3: ComfyUI Desktop application files"
+  DetailPrint "Step 2 of 3: Comfy Desktop application files"
   DetailPrint "  Extracting to $INSTDIR (this may take a minute)..."
 
   Pop $R8
@@ -205,7 +205,7 @@
   DetailPrint ""
   DetailPrint "Step 3 of 3: Finishing up"
   DetailPrint "  Cleaning up temporary files..."
-  DetailPrint "  ComfyUI Desktop is ready to launch."
+  DetailPrint "  Comfy Desktop is ready to launch."
 !macroend
 
 # Custom finish page: launch the app as the current user (not elevated)

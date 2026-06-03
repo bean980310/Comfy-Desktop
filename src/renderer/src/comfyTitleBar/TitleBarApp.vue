@@ -1162,7 +1162,7 @@ onUnmounted(() => {
   opacity: 0.7;
   flex-shrink: 0;
 }
-/* Install-less host windows: identity-only `Desktop 2.0 Beta` label. */
+/* Install-less host windows: identity-only `Comfy Desktop` label. */
 .title-install-pill.is-install-less {
   opacity: 0.85;
 }

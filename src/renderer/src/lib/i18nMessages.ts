@@ -91,7 +91,7 @@ export const en = {
   titleBar: {
     menu: 'Menu',
     feedback: 'Feedback',
-    feedbackTooltip: 'Send Beta Feedback',
+    feedbackTooltip: 'Send Feedback',
     downloads: 'Downloads',
     /** vue-i18n plural rule: "no plural form | singular | plural". */
     downloadsInProgress:
@@ -127,7 +127,7 @@ export const en = {
     addExistingInstall: 'Add Existing Install',
     loadSnapshot: 'Load Snapshot',
     globalSettings: 'Desktop Settings',
-    sendFeedback: 'Send Beta Feedback',
+    sendFeedback: 'Send Feedback',
     returnToDashboard: 'Return to Dashboard',
     closeAllWindows: 'Close All Windows',
     exitWindow: 'Close Window',
@@ -327,7 +327,7 @@ export const en = {
     readyBadge: 'Ready to restart',
     sectionTitle: 'Desktop updates',
     fallbackVersion: 'this update',
-    panelIdleTitle: 'ComfyUI Desktop is up to date',
+    panelIdleTitle: 'Comfy Desktop is up to date',
     panelAvailableTitle: 'Update {version} available',
     panelReadyTitle: 'Update {version} ready to install',
     panelDownloadingTitle: 'Downloading update {version}…',

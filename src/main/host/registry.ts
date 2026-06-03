@@ -176,7 +176,7 @@ export interface ComfyWindowEntry {
   /**
    * Current title-bar pill label. Install-backed windows mirror the
    * install name (and re-push on rename); install-less hosts hold
-   * `'Desktop 2.0 Beta'`. Stored on the entry so the unified
+   * `'Comfy Desktop'`. Stored on the entry so the unified
    * `title-bar-ready` handshake in `createHostWindow()` can
    * synthesize the initial push without a per-mode callback
    * closure, and so `attachInstall()` / `detachInstall()` can swap

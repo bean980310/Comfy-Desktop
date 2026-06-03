@@ -256,7 +256,7 @@ export async function confirmAndCloseAllHostWindows(
     return
   }
   // One clean line per open instance — the title-bar pill name, not the
-  // verbose OS window title ("… — *Unsaved Workflow — Desktop 2.0 v…").
+  // verbose OS window title ("… — *Unsaved Workflow — Comfy Desktop v…").
   const titles = instanceWindows.map((e) => e.titleBarText || 'Untitled instance')
   const details: SystemModalDetailGroup[] = [
     { label: 'Open instances', items: titles },
@@ -398,7 +398,7 @@ export async function confirmAndCloseHostWindow(parentWindow: BrowserWindow): Pr
  *      comfyView is kept alive (not destroyed) so the host can be
  *      re-attached later without rebuilding.
  *   3. Resets the title-bar identity (`titleBarText` →
- *      `'Desktop 2.0 Beta'`, `sourceCategory` → `null`) and pushes
+ *      `'Comfy Desktop'`, `sourceCategory` → `null`) and pushes
  *      to the live title-bar.
  *   4. Resets the OS-level window title.
  *   5. Re-paints the title bar to the launcher-theme surface
