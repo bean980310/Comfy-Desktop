@@ -123,6 +123,35 @@ describe('settings unset/default semantics', () => {
     expect(persisted['theme']).toBe('dark')
   })
 
+  it('discards the legacy maxCachedFiles key and defaults maxCachedDownloads to 1', () => {
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({ maxCachedFiles: 5, theme: 'dark' }, null, 2),
+      'utf-8'
+    )
+
+    expect(settings.get('maxCachedDownloads')).toBe(1)
+    expect(settings.get('maxCachedFiles' as string)).toBeUndefined()
+    expect(settings.get('theme')).toBe('dark')
+
+    const persisted = readPersistedSettings()
+    expect(persisted).not.toHaveProperty('maxCachedFiles')
+    expect(persisted['maxCachedDownloads']).toBe(1)
+  })
+
+  it('preserves a manual maxCachedDownloads edit', () => {
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({ maxCachedDownloads: 9 }, null, 2),
+      'utf-8'
+    )
+
+    expect(settings.get('maxCachedDownloads')).toBe(9)
+    expect(readPersistedSettings()['maxCachedDownloads']).toBe(9)
+  })
+
   it('treats null for unknown keys as passthrough values', () => {
     settings.set('customKey' as string, null)
     expect(settings.get('customKey' as string)).toBeNull()

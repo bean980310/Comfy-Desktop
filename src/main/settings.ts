@@ -7,7 +7,9 @@ import { readFileSafe, writeFileSafe } from './lib/safe-file'
 
 export interface KnownSettings {
   cacheDir: string
-  maxCachedFiles: number
+  /** Number of completed downloads kept in the cache before eviction. Not
+   *  exposed in the UI; editable only by hand in settings.json. */
+  maxCachedDownloads: number
   onAppClose: 'tray' | 'quit'
   modelsDirs: string[]
   inputDir: string
@@ -37,7 +39,7 @@ export type Settings = KnownSettings & Record<string, unknown>
 
 type DefaultedSettingKey =
   | 'cacheDir'
-  | 'maxCachedFiles'
+  | 'maxCachedDownloads'
   | 'onAppClose'
   | 'modelsDirs'
   | 'inputDir'
@@ -51,7 +53,7 @@ const SHARED_ROOT = path.join(homeDir(), "ComfyUI-Shared")
 
 const SETTINGS_SCHEMA = {
   cacheDir: { nullable: false },
-  maxCachedFiles: { nullable: false },
+  maxCachedDownloads: { nullable: false },
   onAppClose: { nullable: false },
   modelsDirs: { nullable: false },
   inputDir: { nullable: false },
@@ -87,7 +89,7 @@ function isNullableKnownSettingKey(key: KnownSettingKey): key is NullableKnownSe
 
 export const defaults: SettingsDefaults = {
   cacheDir: path.join(cacheDir(), "download-cache"),
-  maxCachedFiles: 5,
+  maxCachedDownloads: 1,
   // Docking-to-tray is disabled (createTray() is currently a no-op).
   onAppClose: "quit",
   modelsDirs: [path.join(SHARED_ROOT, "models")],
@@ -205,8 +207,10 @@ function load(): Settings {
   const result: Settings = { ...defaults, ...(parsed || {}) }
   let changed = false
 
-  // Drop legacy pin keys that no longer back any UI.
-  for (const key of ['primaryInstallId', 'pinnedInstallIds']) {
+  // Drop legacy keys that no longer back any setting. `maxCachedFiles` was the
+  // user-editable predecessor of `maxCachedDownloads`; its old value is
+  // discarded so everyone adopts the new default.
+  for (const key of ['primaryInstallId', 'pinnedInstallIds', 'maxCachedFiles']) {
     if (Object.prototype.hasOwnProperty.call(result, key)) {
       delete result[key]
       changed = true
