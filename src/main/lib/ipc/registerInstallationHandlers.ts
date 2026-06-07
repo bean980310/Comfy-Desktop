@@ -37,6 +37,7 @@ import { hasGitDir } from '../git'
 import { parseUrl } from '../util'
 import { restoreSnapshotIntoInstallation } from '../standaloneMigration'
 import * as mainTelemetry from '../telemetry'
+import { appendLog } from '../logsBroadcast'
 import { recordIpcInvocation } from '../e2eOverrides'
 
 /** Fire-and-forget: refresh the shared ComfyUI release cache for the
@@ -271,6 +272,7 @@ export function registerInstallationHandlers(): void {
             try {
               if (!sender.isDestroyed()) sender.send('comfy-output', { installationId, text })
             } catch {}
+            appendLog(installationId, text)
           }
           const update = (data: Record<string, unknown>): Promise<void> =>
             installations.update(installationId, data).then(() => {})

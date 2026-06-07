@@ -24,6 +24,9 @@ export interface KnownSettings {
   /** When true (default), Desktop updates download and install silently; when
    *  false, the user is prompted before any download/install. */
   autoInstallUpdates?: boolean
+  /** When true (default), boot reopens the last-used instance window instead of
+   *  the dashboard, when the last active surface was an instance. */
+  reopenLastInstanceOnLaunch?: boolean
   pypiMirror?: string
   useChineseMirrors?: boolean
   chineseMirrorsPrompted?: boolean
@@ -31,6 +34,17 @@ export interface KnownSettings {
   /** `true` once the first-use takeover is finished. Mid-flow cancel does NOT
    *  flip this, so the takeover replays from step 1 next launch. */
   firstUseCompleted?: boolean
+  /** When true, hide the Cloud tile (and the Try-Cloud CTA) from the
+   *  Dashboard / Instance Picker. Local-only users who never use Cloud
+   *  can opt out of seeing it without us removing the feature. Default
+   *  false — Cloud stays visible. */
+  hideCloudFromPicker?: boolean
+  /** When true, closing the last ComfyUI instance window quits Desktop
+   *  directly — no modal, no return-to-dashboard fallback. For power
+   *  users who treat the instance window as the whole app. Default
+   *  false — closing the last instance window returns to the dashboard.
+   *  Replaces the three-way close modal from the bundle iteration. */
+  closeDirectlyOnLastWindow?: boolean
   oemManagedModelDirs?: string[]
   oemWorkflowImportVersion?: number
   /** Directory the user last chose in the general "Save image/file" dialog.
@@ -66,11 +80,14 @@ const SETTINGS_SCHEMA = {
   theme: { nullable: false },
   autoUpdate: { nullable: false },
   autoInstallUpdates: { nullable: false },
+  reopenLastInstanceOnLaunch: { nullable: false },
   pypiMirror: { nullable: false },
   useChineseMirrors: { nullable: false },
   chineseMirrorsPrompted: { nullable: false },
   telemetryEnabled: { nullable: false },
   firstUseCompleted: { nullable: false },
+  hideCloudFromPicker: { nullable: false },
+  closeDirectlyOnLastWindow: { nullable: false },
   oemManagedModelDirs: { nullable: false },
   oemWorkflowImportVersion: { nullable: false },
   lastSaveDialogDir: { nullable: true },
