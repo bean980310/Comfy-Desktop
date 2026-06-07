@@ -100,6 +100,9 @@
     "crashedDescWithCodeAndSignal": "The ComfyUI process was terminated by {signal} (exit code {code}). You can restart it below.",
     "crashedDescLogsHint": "See the logs for details.",
     "restart": "Restart ComfyUI",
+    "stoppedTitle": "ComfyUI is stopped",
+    "stoppedDesc": "The ComfyUI server is stopped. This window stayed open — relaunch it below whenever you're ready.",
+    "relaunch": "Relaunch ComfyUI",
     "launchProgressTitle": "Starting ComfyUI"
   },
 
@@ -567,6 +570,9 @@
     "restartConfirmMessage": "This will stop ComfyUI and start it again. Any unsaved work will be lost.",
     "restartConfirm": "Restart",
     "restartProgressTitle": "Restarting ComfyUI",
+    "stop": "Stop",
+    "stopConfirmTitle": "Stop ComfyUI",
+    "stopConfirmMessage": "This will stop ComfyUI. Any unsaved work will be lost. The window stays open so you can relaunch anytime.",
     "connect": "Connect",
     "connecting": "Connecting",
     "openDirectory": "Open Directory",
