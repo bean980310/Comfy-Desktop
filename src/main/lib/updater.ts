@@ -130,19 +130,46 @@ function isSystemPackageInstall(): boolean {
  * (the "startup install" path) instead of letting electron-updater install it
  * on quit.
  *
- * Default OFF. With it off, the app keeps the normal install-on-quit behavior;
- * the `session-end` guard (`suppressInstallOnQuit`) only suppresses that install
- * while the OS is shutting down, so a Windows shutdown/restart/logoff can no
- * longer kill an installer mid-write (the "reinstall on every shutdown"
- * corruption loop). With it on, install-on-quit is disabled entirely and the
- * staged update applies on the next boot.
+ * Windows-only. The install corruption this guards against is specific to
+ * electron-updater's NSIS install-on-quit, which spawns a detached installer the
+ * OS can kill mid-write during a shutdown. macOS (Squirrel.Mac / ShipIt — a
+ * launchd-supervised, resumable helper) and Linux don't have that failure mode,
+ * so applying updates at startup there would only add risk to a working update
+ * channel. On those platforms this always returns false.
+ *
+ * Default OFF even on Windows. With it off, the app keeps the normal
+ * install-on-quit behavior; the `session-end` guard (`suppressInstallOnQuit`)
+ * only suppresses that install while the OS is shutting down. With it on,
+ * install-on-quit is disabled entirely and the staged update applies on the next
+ * boot.
  *
  * Not a remote flag yet — flip it via the hidden `installUpdatesOnStartup`
  * setting (edited by hand in settings.json), so the startup-install path can be
  * canaried before any wider rollout.
  */
 function isStartupInstallEnabled(): boolean {
+  if (process.platform !== 'win32') return false
   return settings.get('installUpdatesOnStartup') === true
+}
+
+/**
+ * Local, static gate for showing the NSIS installer's own progress window during
+ * an update (`isSilent: false`) instead of installing fully silently.
+ *
+ * Windows-only — `isSilent` is an NSIS flag with no effect on the macOS
+ * (Squirrel) / Linux update paths. On an update the assisted installer skips the
+ * welcome/license/directory pages (electron-builder's `skipPageIfUpdated`) and
+ * our `customFinishPage` auto-launches the app + aborts the finish page, so the
+ * user sees only a progress window with no clicks required. This gives
+ * continuous visual feedback during the actual file copy — which our Electron
+ * "Updating…" splash can't, since the copy runs after the app has quit.
+ *
+ * Default OFF. Not remote yet — flip the hidden `showInstallerUI` setting by
+ * hand in settings.json to canary it.
+ */
+function isInstallerUIEnabled(): boolean {
+  if (process.platform !== 'win32') return false
+  return settings.get('showInstallerUI') === true
 }
 
 /**
@@ -502,7 +529,10 @@ export function installUpdate(): void {
     if (process.platform === 'darwin') {
       app.releaseSingleInstanceLock()
     }
-    updater.restartAndInstall({ isSilent: true })
+    // `isSilent: false` shows the NSIS progress window during the install (see
+    // `isInstallerUIEnabled` — Windows-only, gated, default off). Off everywhere
+    // else, so the macOS/Linux paths and the default Windows path stay silent.
+    updater.restartAndInstall({ isSilent: !isInstallerUIEnabled() })
   } catch (err) {
     clearQuitReason()
     _broadcastToRenderer('app-update:user-action-failed', {
@@ -528,6 +558,15 @@ export function _test_setUpdateState(next: AppUpdateState): void {
  *  re-validates the cached file against the release feed (no re-download); the
  *  cap keeps a slow / offline network from ever hanging the launch. */
 const STARTUP_UPDATE_CHECK_TIMEOUT_MS = 5000
+
+/** Minimum time the "Updating…" splash stays up before the install quits the
+ *  app. The bounded check above usually resolves near-instantly (the installer
+ *  was already downloaded and cached), which would otherwise flash the splash
+ *  for a fraction of a second before the app quits — feeling like a glitch
+ *  rather than an intentional update. This floor (measured from when the splash
+ *  was shown, so the check's own elapsed time counts toward it) keeps the splash
+ *  readable. Only applies when a splash is actually up (startup-install path). */
+const STARTUP_INSTALL_MIN_SPLASH_MS = 2000
 
 /** Why a startup install was or wasn't attempted. The skip reasons that carry
  *  canary signal (`loop_breaker`, `session_ending`, `not_ready`) are reported via
@@ -610,8 +649,13 @@ function waitForReadyState(timeoutMs: number): Promise<void> {
  * to quit and the installer relaunches it). Returns `false` (open the UI as
  * usual) when there's nothing to do, the check can't confirm a ready update, or
  * the loop-breaker is engaged.
+ *
+ * `splashShownAt` is the timestamp (from `Date.now()`) when the caller put up
+ * the "Updating…" splash; when provided, the install is held until the splash
+ * has been visible for at least `STARTUP_INSTALL_MIN_SPLASH_MS` so it doesn't
+ * flash by before the app quits.
  */
-export async function applyPendingUpdateOnStartup(): Promise<boolean> {
+export async function applyPendingUpdateOnStartup(splashShownAt?: number): Promise<boolean> {
   // Clear stale markers once the attempted/staged version is actually running
   // (the install succeeded on a previous boot).
   const running = app.getVersion()
@@ -652,7 +696,18 @@ export async function applyPendingUpdateOnStartup(): Promise<boolean> {
     })
     return false
   }
-  // The session may have started ending while we awaited the check.
+  // Hold the "Updating…" splash on screen for a readable minimum before the
+  // install quits the app. The check above often resolves instantly (cached
+  // installer), so without this the splash would flash by in a fraction of a
+  // second. Measured from when the splash was shown, so the check's own elapsed
+  // time counts toward the floor.
+  if (splashShownAt !== undefined) {
+    const remaining = STARTUP_INSTALL_MIN_SPLASH_MS - (Date.now() - splashShownAt)
+    if (remaining > 0) await new Promise<void>((resolve) => setTimeout(resolve, remaining))
+  }
+
+  // The session may have started ending while we awaited the check / held the
+  // splash up.
   if (isSessionEnding()) {
     emitTelemetry('comfy.desktop.app_update.startup_install_skipped', {
       reason: 'session_ending',

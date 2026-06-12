@@ -364,6 +364,11 @@ describe('startup update install + session-end guard (issue #1065)', () => {
     Object.defineProperty(process, 'platform', originalPlat)
   })
 
+  /** All `emit()` telemetry calls recorded for a given event name. Shared so the
+   *  assertions can't drift apart on the filter predicate. */
+  const findEmitCalls = (event: string): unknown[][] =>
+    emitMock.mock.calls.filter((c) => c[0] === event)
+
   it('register() leaves install-on-quit enabled by default (Option B)', async () => {
     delete settingsStore['installUpdatesOnStartup']
     const updater = await import('./updater')
@@ -377,6 +382,22 @@ describe('startup update install + session-end guard (issue #1065)', () => {
     const updater = await import('./updater')
     updater.register()
     expect(electronUpdaterMock.autoInstallOnAppQuit).toBe(false)
+  })
+
+  it('startup install is inert on non-Windows even when the flag is on', async () => {
+    // macOS (Squirrel.Mac / ShipIt) and Linux don't have the NSIS shutdown
+    // corruption, so Option C must stay off there regardless of the setting.
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
+    settingsStore['installUpdatesOnStartup'] = true
+    settingsStore['pendingDownloadedUpdateVersion'] = '1.0.1'
+    readyVersion = '1.0.1'
+    const updater = await import('./updater')
+    updater.register()
+    // register() must NOT disable install-on-quit on macOS.
+    expect(electronUpdaterMock.autoInstallOnAppQuit).toBe(true)
+    expect(updater.hasPendingStartupUpdate()).toBe(false)
+    expect(await updater.applyPendingUpdateOnStartup()).toBe(false)
+    expect(fakeUpdater.restartAndInstall).not.toHaveBeenCalled()
   })
 
   it('suppressInstallOnQuit() disables install-on-quit (Option B session-end guard)', async () => {
@@ -405,6 +426,31 @@ describe('startup update install + session-end guard (issue #1065)', () => {
     updater.register()
     updater.installUpdate()
     expect(fakeUpdater.restartAndInstall).not.toHaveBeenCalled()
+  })
+
+  it('installUpdate() installs silently by default (showInstallerUI off)', async () => {
+    delete settingsStore['showInstallerUI']
+    const updater = await import('./updater')
+    updater.register()
+    updater.installUpdate()
+    expect(fakeUpdater.restartAndInstall).toHaveBeenCalledWith({ isSilent: true })
+  })
+
+  it('installUpdate() shows the NSIS installer UI when showInstallerUI is on', async () => {
+    settingsStore['showInstallerUI'] = true
+    const updater = await import('./updater')
+    updater.register()
+    updater.installUpdate()
+    expect(fakeUpdater.restartAndInstall).toHaveBeenCalledWith({ isSilent: false })
+  })
+
+  it('installUpdate() ignores showInstallerUI off Windows (isSilent stays true)', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
+    settingsStore['showInstallerUI'] = true
+    const updater = await import('./updater')
+    updater.register()
+    updater.installUpdate()
+    expect(fakeUpdater.restartAndInstall).toHaveBeenCalledWith({ isSilent: true })
   })
 
   it('hasPendingStartupUpdate() reflects the staged-update markers', async () => {
@@ -438,6 +484,30 @@ describe('startup update install + session-end guard (issue #1065)', () => {
     expect(settingsStore['lastStartupUpdateAttemptVersion']).toBe('1.0.1')
   })
 
+  it('applyPendingUpdateOnStartup() holds the install until the splash minimum elapses', async () => {
+    vi.useFakeTimers()
+    try {
+      settingsStore['pendingDownloadedUpdateVersion'] = '1.0.1'
+      readyVersion = '1.0.1' // check resolves instantly (cached installer)
+      const updater = await import('./updater')
+      updater.register()
+
+      // Splash just went up, so the full minimum (2000ms) must elapse first.
+      const pending = updater.applyPendingUpdateOnStartup(Date.now())
+
+      // Let the (instant) ready check settle, but stay short of the floor.
+      await vi.advanceTimersByTimeAsync(1500)
+      expect(fakeUpdater.restartAndInstall).not.toHaveBeenCalled()
+
+      // Cross the floor — the install now fires.
+      await vi.advanceTimersByTimeAsync(600)
+      expect(await pending).toBe(true)
+      expect(fakeUpdater.restartAndInstall).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('applyPendingUpdateOnStartup() does nothing when no update is staged', async () => {
     const updater = await import('./updater')
     updater.register()
@@ -454,8 +524,9 @@ describe('startup update install + session-end guard (issue #1065)', () => {
       updater.register()
       const pending = updater.applyPendingUpdateOnStartup()
       // No 'ready' transition arrives, so the bounded wait falls through on its
-      // timeout rather than hanging boot forever.
-      await vi.advanceTimersByTimeAsync(5000)
+      // timeout rather than hanging boot forever. Advance just past the 5000ms
+      // timeout so the check settles regardless of event-loop boundary timing.
+      await vi.advanceTimersByTimeAsync(5100)
       expect(await pending).toBe(false)
       expect(fakeUpdater.restartAndInstall).not.toHaveBeenCalled()
     } finally {
@@ -480,9 +551,7 @@ describe('startup update install + session-end guard (issue #1065)', () => {
     const updater = await import('./updater')
     updater.register()
     await updater.applyPendingUpdateOnStartup()
-    const skipped = emitMock.mock.calls.filter(
-      (c) => c[0] === 'comfy.desktop.app_update.startup_install_skipped'
-    )
+    const skipped = findEmitCalls('comfy.desktop.app_update.startup_install_skipped')
     expect(skipped).toHaveLength(1)
     expect(skipped[0]?.[1]).toMatchObject({ reason: 'loop_breaker', version: '1.0.1' })
   })
@@ -495,11 +564,10 @@ describe('startup update install + session-end guard (issue #1065)', () => {
       const updater = await import('./updater')
       updater.register()
       const pending = updater.applyPendingUpdateOnStartup()
-      await vi.advanceTimersByTimeAsync(5000)
+      // Past the 5000ms bounded-check timeout (buffer avoids boundary races).
+      await vi.advanceTimersByTimeAsync(5100)
       await pending
-      const skipped = emitMock.mock.calls.filter(
-        (c) => c[0] === 'comfy.desktop.app_update.startup_install_skipped'
-      )
+      const skipped = findEmitCalls('comfy.desktop.app_update.startup_install_skipped')
       expect(skipped).toHaveLength(1)
       expect(skipped[0]?.[1]).toMatchObject({ reason: 'not_ready', version: '1.0.1' })
     } finally {

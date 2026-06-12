@@ -1245,18 +1245,25 @@ if (app.isPackaged && !app.requestSingleInstanceLock()) {
   // the corruption mode behind the "reinstall on every shutdown" reports.
   // `session-end` is a BrowserWindow event, so attach it to every window as it
   // is created.
-  const onSessionEnding = (): void => {
-    setSessionEnding()
-    // Default mode keeps electron-updater's install-on-quit armed; flip it off
-    // now so the quit handler it registered after a download won't spawn the
-    // installer the OS is about to kill mid-write.
-    updater.suppressInstallOnQuit()
-  }
   app.on('browser-window-created', (_event, window) => {
-    // `query-session-end` fires earlier than `session-end` on Windows, widening
-    // the margin to suppress install-on-quit before the OS tears things down.
-    window.on('query-session-end', onSessionEnding)
-    window.on('session-end', onSessionEnding)
+    // `query-session-end` (WM_QUERYENDSESSION) fires earlier than `session-end`,
+    // but the shutdown it announces can still be canceled (by us or another app)
+    // — so only suppress install-on-quit here (reversible / re-armed next
+    // launch). Flipping it off now widens the margin to keep the quit handler
+    // electron-updater registered after a download from spawning the installer
+    // the OS is about to kill mid-write.
+    window.on('query-session-end', () => {
+      updater.suppressInstallOnQuit()
+    })
+    // `session-end` (WM_ENDSESSION) means the session ending is finalized and
+    // can't be prevented — only now is it safe to latch `setSessionEnding()`,
+    // which permanently bails the install paths. Latching on the cancellable
+    // query event would brick installs (incl. the "Restart to update" pill) for
+    // the rest of the session if the shutdown were canceled.
+    window.on('session-end', () => {
+      setSessionEnding()
+      updater.suppressInstallOnQuit()
+    })
   })
 
   app.whenReady().then(async () => {
@@ -2030,6 +2037,10 @@ if (app.isPackaged && !app.requestSingleInstanceLock()) {
     // while the bounded check runs; if it commits to installing, the app quits
     // here and the installer relaunches it — so we skip opening the normal UI.
     const updateSplash = updater.hasPendingStartupUpdate() ? showUpdateInstallSplash() : undefined
+    // Timestamp the splash so the install can keep it up for a readable minimum
+    // (the bounded check usually resolves instantly, which would otherwise flash
+    // the splash by before the app quits to install).
+    const updateSplashShownAt = updateSplash ? Date.now() : undefined
     // Track whether the install actually started quitting the app. Quit intent
     // (`quitReason`) alone isn't proof — `restartAndInstall` can return without
     // quitting if the staged installer is gone — so key the backstop off a real
@@ -2039,7 +2050,7 @@ if (app.isPackaged && !app.requestSingleInstanceLock()) {
       updateInstallQuitStarted = true
     }
     app.once('before-quit', onUpdateInstallQuit)
-    const installingUpdate = await updater.applyPendingUpdateOnStartup()
+    const installingUpdate = await updater.applyPendingUpdateOnStartup(updateSplashShownAt)
     if (installingUpdate) {
       // Safety net: a successful install quits the app within a tick (firing
       // before-quit). If that didn't happen the install didn't proceed — recover
