@@ -1,7 +1,8 @@
 import { app, ipcMain } from 'electron'
 import todesktop from '@todesktop/runtime'
+import { autoUpdater as electronAutoUpdater } from 'electron-updater'
 import * as settings from '../settings'
-import { clearQuitReason, setQuitReason } from './quit-state'
+import { clearQuitReason, isSessionEnding, setQuitReason } from './quit-state'
 import { _broadcastToRenderer } from './ipc/shared'
 import { emit as emitTelemetry, bucketError } from './telemetry'
 
@@ -124,6 +125,41 @@ function isSystemPackageInstall(): boolean {
   return appPath.startsWith('/opt/') || appPath.startsWith('/usr/')
 }
 
+/**
+ * Local, static feature gate for applying a staged update at the next launch
+ * (the "startup install" path) instead of letting electron-updater install it
+ * on quit.
+ *
+ * Default OFF. With it off, the app keeps the normal install-on-quit behavior;
+ * the `session-end` guard (`suppressInstallOnQuit`) only suppresses that install
+ * while the OS is shutting down, so a Windows shutdown/restart/logoff can no
+ * longer kill an installer mid-write (the "reinstall on every shutdown"
+ * corruption loop). With it on, install-on-quit is disabled entirely and the
+ * staged update applies on the next boot.
+ *
+ * Not a remote flag yet — flip it via the hidden `installUpdatesOnStartup`
+ * setting (edited by hand in settings.json), so the startup-install path can be
+ * canaried before any wider rollout.
+ */
+function isStartupInstallEnabled(): boolean {
+  return settings.get('installUpdatesOnStartup') === true
+}
+
+/**
+ * Disable electron-updater's install-on-quit. Called when the OS signals the
+ * session is ending (Windows shutdown / restart / logoff) so the quit handler
+ * electron-updater registers after a download won't spawn the installer while
+ * the OS tears everything down — that mid-write kill is the corruption mode
+ * behind the "reinstall on every shutdown" loop. The quit handler re-reads this
+ * flag at quit time, so flipping it here is enough. Safe to call in any mode (a
+ * no-op when the startup-install path already disabled it at register time).
+ */
+export function suppressInstallOnQuit(): void {
+  try {
+    electronAutoUpdater.autoInstallOnAppQuit = false
+  } catch {}
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null
 }
@@ -200,6 +236,14 @@ function bindUpdaterEvents(): void {
     if (_shouldEmitAppUpdateOnce('comfy.desktop.app_update.download_complete', version)) {
       emitTelemetry('comfy.desktop.app_update.download_complete', { version })
     }
+    // Persist that an installer is staged on disk. electron-updater caches the
+    // download across restarts; this marker lets the startup-install path (when
+    // enabled) apply it on the next boot. Harmless in the default on-quit mode —
+    // it's just a record that a download finished and is cleared once the staged
+    // version is the one running.
+    try {
+      settings.set('pendingDownloadedUpdateVersion', version)
+    } catch {}
     _setUpdateState({ kind: 'ready', version, autoUpdate: isAutoInstallEnabled() })
     if (_userInitiatedDownload) {
       // The user opted in to download via the auto-off available pill
@@ -428,6 +472,13 @@ export async function downloadUpdate(): Promise<void> {
  * system-modal "Restart" confirm) share a single implementation.
  */
 export function installUpdate(): void {
+  if (isSessionEnding()) {
+    // The OS is shutting down / logging off. Spawning the installer now risks
+    // it being force-killed mid-write, corrupting the install — the exact
+    // failure this whole flow exists to avoid. The staged update stays put and
+    // applies on the next launch instead.
+    return
+  }
   const updater = getAutoUpdater()
   if (!updater) {
     _broadcastToRenderer('app-update:user-action-failed', { message: UPDATER_UNAVAILABLE_MESSAGE })
@@ -472,8 +523,168 @@ export function _test_setUpdateState(next: AppUpdateState): void {
   _setUpdateState(next)
 }
 
+/** Upper bound on how long the startup-install check may delay boot. The
+ *  installer was already downloaded in a previous session, so this only
+ *  re-validates the cached file against the release feed (no re-download); the
+ *  cap keeps a slow / offline network from ever hanging the launch. */
+const STARTUP_UPDATE_CHECK_TIMEOUT_MS = 5000
+
+/** Why a startup install was or wasn't attempted. The skip reasons that carry
+ *  canary signal (`loop_breaker`, `session_ending`, `not_ready`) are reported via
+ *  `comfy.desktop.app_update.startup_install_skipped`; the rest are normal boots
+ *  and stay silent. */
+type StartupInstallDecision =
+  | { attempt: true; version: string }
+  | {
+      attempt: false
+      reason: 'disabled' | 'e2e' | 'system_managed' | 'session_ending' | 'no_pending' | 'loop_breaker'
+    }
+
+/**
+ * Decide whether to install a staged Desktop update on this launch. Cheap and
+ * synchronous (reads only persisted markers + environment).
+ *
+ * Returns a skip for: the startup-install gate being off (the default — installs
+ * still happen on quit), E2E runs, system-package-managed installs (apt/dnf own
+ * the update), an OS session that's already ending, no staged download (or one
+ * that's already the running version), and the loop-breaker case (we already
+ * auto-attempted this exact version and are still on the old one).
+ */
+function evaluateStartupInstall(): StartupInstallDecision {
+  if (!isStartupInstallEnabled()) return { attempt: false, reason: 'disabled' }
+  if (process.env['E2E'] === '1') return { attempt: false, reason: 'e2e' }
+  if (isSystemPackageInstall()) return { attempt: false, reason: 'system_managed' }
+  if (isSessionEnding()) return { attempt: false, reason: 'session_ending' }
+  const pending = settings.get('pendingDownloadedUpdateVersion')
+  if (!pending || pending === app.getVersion()) return { attempt: false, reason: 'no_pending' }
+  const lastAttempt = settings.get('lastStartupUpdateAttemptVersion')
+  if (lastAttempt === pending) return { attempt: false, reason: 'loop_breaker' }
+  return { attempt: true, version: pending }
+}
+
+/**
+ * True when there is a staged Desktop update we should try to install on this
+ * launch. Lets callers decide whether to show an "Updating…" splash before the
+ * bounded `applyPendingUpdateOnStartup` check runs.
+ */
+export function hasPendingStartupUpdate(): boolean {
+  return evaluateStartupInstall().attempt
+}
+
+/**
+ * Kick off a startup update check and resolve once the update reaches the
+ * `'ready'` state or the deadline passes. Don't rely on `runCheck` resolving to
+ * imply readiness — the `'ready'` transition happens in the `update-downloaded`
+ * handler, which (depending on the updater) can fire slightly after the check
+ * promise settles. Subscribing first closes that race.
+ */
+function waitForReadyState(timeoutMs: number): Promise<void> {
+  if (getCurrentUpdateState().kind === 'ready') return Promise.resolve()
+  return new Promise<void>((resolve) => {
+    let done = false
+    const finish = (): void => {
+      if (done) return
+      done = true
+      unsub()
+      clearTimeout(timer)
+      resolve()
+    }
+    const unsub = onUpdateStateChanged((s) => {
+      if (s.kind === 'ready') finish()
+    })
+    const timer = setTimeout(finish, timeoutMs)
+    runCheck('startup-install')
+      .then(() => {
+        if (getCurrentUpdateState().kind === 'ready') finish()
+      })
+      .catch(() => {})
+  })
+}
+
+/**
+ * Apply a previously-downloaded Desktop update at startup instead of on quit.
+ * Installing on quit is what gets interrupted by a Windows shutdown and leaves
+ * a corrupted install; doing it at launch decouples the install from the
+ * shutdown entirely. Returns `true` when an install was triggered (the caller
+ * should then keep the splash up and NOT open the normal UI — the app is about
+ * to quit and the installer relaunches it). Returns `false` (open the UI as
+ * usual) when there's nothing to do, the check can't confirm a ready update, or
+ * the loop-breaker is engaged.
+ */
+export async function applyPendingUpdateOnStartup(): Promise<boolean> {
+  // Clear stale markers once the attempted/staged version is actually running
+  // (the install succeeded on a previous boot).
+  const running = app.getVersion()
+  if (settings.get('lastStartupUpdateAttemptVersion') === running) {
+    settings.set('lastStartupUpdateAttemptVersion', undefined)
+  }
+  if (settings.get('pendingDownloadedUpdateVersion') === running) {
+    settings.set('pendingDownloadedUpdateVersion', undefined)
+  }
+
+  const decision = evaluateStartupInstall()
+  if (!decision.attempt) {
+    // Only the skips that mean "a staged update exists but we declined it"
+    // carry canary signal; normal boots (no pending / feature off) stay silent.
+    if (decision.reason === 'loop_breaker' || decision.reason === 'session_ending') {
+      emitTelemetry('comfy.desktop.app_update.startup_install_skipped', {
+        reason: decision.reason,
+        version: settings.get('pendingDownloadedUpdateVersion') ?? null
+      })
+    }
+    return false
+  }
+
+  // The installer is cached on disk from a previous session; this check
+  // re-validates it (no re-download) and populates the updater's ready state.
+  // Bounded so a slow/offline network can't hang boot — if it doesn't resolve
+  // to a ready update in time, we open the UI and try again next launch.
+  await waitForReadyState(STARTUP_UPDATE_CHECK_TIMEOUT_MS)
+
+  const state = getCurrentUpdateState()
+  // Require the ready version to be the exact staged version we decided to
+  // install — a concurrent check could surface a different (or no) ready
+  // version, which must not bypass the loop-breaker recorded for `decision.version`.
+  if (state.kind !== 'ready' || state.version !== decision.version) {
+    emitTelemetry('comfy.desktop.app_update.startup_install_skipped', {
+      reason: 'not_ready',
+      version: decision.version
+    })
+    return false
+  }
+  // The session may have started ending while we awaited the check.
+  if (isSessionEnding()) {
+    emitTelemetry('comfy.desktop.app_update.startup_install_skipped', {
+      reason: 'session_ending',
+      version: state.version
+    })
+    return false
+  }
+
+  // Record the attempt BEFORE installing so a failed install (app relaunches on
+  // the old version) trips the loop-breaker next boot instead of looping.
+  settings.set('lastStartupUpdateAttemptVersion', state.version)
+  emitTelemetry('comfy.desktop.app_update.startup_install', { version: state.version })
+  installUpdate()
+  return true
+}
+
 export function register(): void {
   bindUpdaterEvents()
+
+  // Default ("Option B"): keep electron-updater's install-on-quit. A normal
+  // quit still installs a staged update; the `session-end` guard
+  // (`suppressInstallOnQuit`) flips `autoInstallOnAppQuit` off only when the OS
+  // is shutting down, so a Windows shutdown/restart/logoff can't kill the
+  // installer mid-write (the "reinstall on every shutdown" corruption loop).
+  //
+  // Gated ("Option C"): when the startup-install path is enabled, disable
+  // install-on-quit entirely up front — the staged update applies on the next
+  // launch (`applyPendingUpdateOnStartup`) instead. `electronAutoUpdater` is the
+  // same singleton the ToDesktop runtime drives, so this affects the real updater.
+  if (isStartupInstallEnabled()) {
+    suppressInstallOnQuit()
+  }
 
   ipcMain.handle('check-for-update', async () => {
     try {
