@@ -49,6 +49,9 @@ import {
 } from '../../bootPhaseBuffer'
 import { appendLog } from '../../logsBroadcast'
 import { ensureManagerMirrorConfig } from '../../managerConfig'
+import { recoverInterruptedComfyOp } from '../../opMarker'
+import { migrateEnvLayout } from '../../../sources/standalone/install'
+import { writeComfyEnvironment } from '../../../sources/standalone/envPaths'
 import type { WriteStream } from 'fs'
 
 // Feature flags injected on a spawned ComfyUI, gated by the running install's
@@ -169,7 +172,6 @@ export async function handleLaunch({ event, installationId, inst: instArg, actio
     // failure path, not just dropped into the main-process log.
     const recoveryLog: string[] = []
     try {
-      const { recoverInterruptedComfyOp } = await import('../../opMarker')
       const recovered = await recoverInterruptedComfyOp(
         inst.installPath,
         (text) => {
@@ -193,8 +195,6 @@ export async function handleLaunch({ event, installationId, inst: instArg, actio
       const base = `ComfyUI recovery failed: ${(err as Error).message}`
       return { ok: false, message: detail ? `${base}\n\n${detail}` : base }
     }
-    const { migrateEnvLayout } = await import('../../../sources/standalone/install')
-    const { writeComfyEnvironment } = await import('../../../sources/standalone/envPaths')
     const updateFn = async (data: Record<string, unknown>): Promise<unknown> => installations.update(installationId, data)
     try {
       const migrated = await migrateEnvLayout(inst.installPath, updateFn)
