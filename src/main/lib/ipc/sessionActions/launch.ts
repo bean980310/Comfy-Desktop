@@ -30,6 +30,7 @@ import { decodeExitCode } from '../../exitCodeInfo'
 import { auditVcRuntime } from '../../vcRuntimeAudit'
 import { rotateLogFiles, getLogDir } from '../../logRotation'
 import { createExecutionTap } from '../../executionTap'
+import { createHardwareTap } from '../../hardwareTap'
 import { createLaunchProgressTracker } from '../../launchProgress'
 import { buildLaunchPhases } from '../../launchPhases'
 import {
@@ -446,6 +447,7 @@ export async function handleLaunch({ event, installationId, inst: instArg, actio
     logStream: WriteStream,
     sendOutput: (text: string) => void,
     execTap: ReturnType<typeof createExecutionTap>,
+    hwTap: ReturnType<typeof createHardwareTap>,
     tracker: LaunchProgressTracker
   ): { getStderr: () => string } {
     let stderrBuf = ''
@@ -454,6 +456,7 @@ export async function handleLaunch({ event, installationId, inst: instArg, actio
       writeLog(logStream, text)
       sendOutput(text)
       execTap.ingest(text, 'stdout')
+      hwTap.ingest(text, 'stdout')
       tracker.ingest(stripAnsi(text))
     })
     proc.stderr?.on('data', (chunk: Buffer) => {
@@ -463,6 +466,7 @@ export async function handleLaunch({ event, installationId, inst: instArg, actio
       writeLog(logStream, text)
       sendOutput(text)
       execTap.ingest(text, 'stderr')
+      hwTap.ingest(text, 'stderr')
       tracker.ingest(stripAnsi(text))
     })
     return { getStderr: () => stderrBuf }
@@ -628,10 +632,16 @@ export async function handleLaunch({ event, installationId, inst: instArg, actio
       variant: (inst.variant as string | undefined) ?? null,
       release: (inst.release as string | undefined) ?? null,
     })
+    const hwTap = createHardwareTap({
+      installationId,
+      variant: (inst.variant as string | undefined) ?? null,
+      release: (inst.release as string | undefined) ?? null,
+    })
     const tracker = await armLaunchTracker()
 
+    hwTap.beginBoot()
     const proc = spawnProcess(launchCmd.cmd!, launchCmd.args!, launchCmd.cwd!, launchEnv, { showWindow: launchCmd.showWindow })
-    const { getStderr } = attachLaunchStreams(proc, logStream, sendOutput, execTap, tracker)
+    const { getStderr } = attachLaunchStreams(proc, logStream, sendOutput, execTap, hwTap, tracker)
 
     _operationAborts.delete(installationId)
     const mode = (inst.launchMode as string | undefined) || 'window'
@@ -645,6 +655,7 @@ export async function handleLaunch({ event, installationId, inst: instArg, actio
       // (`scrubTelemetryContext` in renderer bootstrap), not here.
       const lastStderr = lastNLines(getStderr(), 100)
       execTap.flushSummary()
+      hwTap.flushSummary()
       // Run the (awaited) crash diagnosis BEFORE releasing the session, so a
       // relaunch can't slip in and clearCrash() during the audit and have this
       // handler then resurrect the stale crash via recordCrash().
@@ -780,6 +791,11 @@ export async function handleLaunch({ event, installationId, inst: instArg, actio
     variant: (inst.variant as string | undefined) ?? null,
     release: (inst.release as string | undefined) ?? null,
   })
+  const hwTap = createHardwareTap({
+    installationId,
+    variant: (inst.variant as string | undefined) ?? null,
+    release: (inst.release as string | undefined) ?? null,
+  })
 
   // Arm the log-driven tracker once, here (a pre-launch repair may already have
   // armed it). Pre-armed so the synchronous relaunch loop can reuse the single
@@ -787,8 +803,11 @@ export async function handleLaunch({ event, installationId, inst: instArg, actio
   const tracker = await armLaunchTracker()
 
   function spawnComfy(): { proc: ChildProcess; getStderr: () => string } {
+    // Reset per-boot accelerator state so each (re)spawn re-emits
+    // accelerator_detected; model-usage counts persist across the launch.
+    hwTap.beginBoot()
     const p = spawnProcess(launchCmd.cmd!, launchCmd.args!, launchCmd.cwd!, launchEnv, { showWindow: launchCmd.showWindow })
-    return { proc: p, ...attachLaunchStreams(p, logStream, sendOutput, execTap, tracker) }
+    return { proc: p, ...attachLaunchStreams(p, logStream, sendOutput, execTap, hwTap, tracker) }
   }
 
   const PORT_RETRY_MAX = 3
@@ -895,6 +914,11 @@ export async function handleLaunch({ event, installationId, inst: instArg, actio
     _operationAborts.delete(installationId)
     abort.abort() // stop the template-models reader timer on launch failure
     _clearLaunchingFailed(installationId)
+    // Flush the hardware tap on terminal failure/cancel too: the exit handler
+    // covers a process that exits, but a waitForPort timeout can return here
+    // with the proc still alive, leaving the model-usage flush interval armed.
+    // flushSummary is idempotent, so a later exit re-flush is harmless.
+    hwTap.flushSummary()
     if (launchResult.cancelled) {
       // User-initiated cancel is not a boot failure — discard the buffer so a
       // later relaunch starts clean and we don't emit phantom boot_phase rows.
@@ -998,6 +1022,11 @@ export async function handleLaunch({ event, installationId, inst: instArg, actio
       } catch (err) {
         logStream.end()
         await killProcessTree(proc)
+        // This relaunch path returns before the normal exit handler is
+        // attached; flush so pending model-usage deltas aren't dropped and the
+        // hardware-tap interval doesn't stay armed. flushSummary is idempotent.
+        execTap.flushSummary()
+        hwTap.flushSummary()
         _removeSession(installationId)
         _clearLaunchingFailed(installationId)
         if (abort.signal.aborted) return { ok: false, cancelled: true }
@@ -1096,6 +1125,7 @@ export async function handleLaunch({ event, installationId, inst: instArg, actio
       // Raw stderr — see note in the early-fail exit handler above.
       const lastStderr = lastNLines(currentGetStderr(), 100)
       execTap.flushSummary()
+      hwTap.flushSummary()
       // Run the (awaited) crash diagnosis BEFORE releasing the session, so a
       // relaunch can't slip in and clearCrash() during the audit and have this
       // handler then resurrect the stale crash via recordCrash().
