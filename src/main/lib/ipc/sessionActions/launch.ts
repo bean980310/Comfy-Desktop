@@ -11,7 +11,7 @@ import {
   _reservePort, _releasePort,
   _addSession, _removeSession,
   _markLaunching, _clearLaunchingFailed,
-  isEffectivelyEmptyInstallDir,
+  installDirStateAsync,
   captureSnapshotIfChanged, getSnapshotCount,
   syncCustomModelFolders, discoverExtraModelFolders, instanceModelPathsYaml, isSamePath,
   createSessionPath, buildLaunchEnv, checkRebootMarker,
@@ -171,8 +171,29 @@ export async function handleLaunch({ event, installationId, inst: instArg, actio
   clearCrash(installationId)
   const source = sourceMap[inst.sourceId]
   if (!source) return { ok: false, message: i18n.t('errors.unknownSource') }
-  if (!source.skipInstall && isEffectivelyEmptyInstallDir(inst.installPath)) {
-    return { ok: false, message: i18n.t('errors.installDirEmpty') }
+  if (!source.skipInstall) {
+    // Async (timeout-guarded) so launching an install on a dead network/
+    // removable path can't block the main process on a sync readdir.
+    const dirState = await installDirStateAsync(inst.installPath)
+    // Block on the persistent, accurately-identified failures with a message
+    // that names the actual problem: `missing` (folder gone/renamed) and
+    // `no-permission` (folder exists but access is denied). `inaccessible` is a
+    // transient readdir error (EIO/EBUSY) or a slow-drive probe timeout, which
+    // can be a false positive on a healthy-but-slow network/removable drive —
+    // so let launch proceed: the common case is a drive that woke up by now and
+    // launches fine. If the path is genuinely unusable the downstream env/exe
+    // checks (getLaunchCommand, the executable existsSync, spawn errors) return
+    // a readable modal error. (A truly-wedged mount can still stall those sync
+    // checks; we accept that over blocking healthy slow drives.)
+    if (dirState === 'missing') {
+      return { ok: false, message: i18n.t('errors.installDirNotFound') }
+    }
+    if (dirState === 'no-permission') {
+      return { ok: false, message: i18n.t('errors.installDirNoPermission') }
+    }
+    if (dirState === 'empty') {
+      return { ok: false, message: i18n.t('errors.installDirEmpty') }
+    }
   }
 
   const sender = event.sender
