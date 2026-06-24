@@ -157,6 +157,41 @@ describe('createHardwareTap', () => {
     })
   })
 
+  it('parses current ComfyUI log lines carrying a colored [LEVEL] prefix', () => {
+    // ComfyUI's ColoredFormatter emits `\x1b[32m[INFO]\x1b[0m <message>`, not
+    // the bare `%(message)s` the parsers are anchored against. The tap must
+    // strip ANSI then the level tag for accelerator + model-usage to fire.
+    const tap = createHardwareTap({ installationId: 'inst-1' })
+    tap.ingest('\u001b[32m[INFO]\u001b[0m Total VRAM 32607 MB, total RAM 97430 MB\n', 'stdout')
+    tap.ingest('\u001b[32m[INFO]\u001b[0m pytorch version: 2.10.0+cu130\n', 'stdout')
+    tap.ingest(
+      '\u001b[32m[INFO]\u001b[0m Device: cuda:0 NVIDIA GeForce RTX 5090 : cudaMallocAsync\n',
+      'stdout'
+    )
+    tap.ingest('\u001b[32m[INFO]\u001b[0m model weight dtype torch.bfloat16, manual cast: None\n', 'stdout')
+    tap.ingest('\u001b[32m[INFO]\u001b[0m model_type FLOW\n', 'stdout')
+
+    const accel = captured.filter((c) => c.event === 'comfy.desktop.comfyui.accelerator_detected')
+    expect(accel).toHaveLength(1)
+    expect(accel[0]!.ctx).toMatchObject({
+      device_type: 'cuda',
+      device_index: 0,
+      gpu_model: 'NVIDIA GeForce RTX 5090',
+      backend: 'cudaMallocAsync',
+      vram_mb: 32607,
+      pytorch_version: '2.10.0+cu130'
+    })
+
+    tap.flushSummary()
+    const usage = captured.filter((c) => c.event === 'comfy.desktop.comfyui.model_usage')
+    expect(usage).toHaveLength(1)
+    expect(usage[0]!.ctx).toMatchObject({
+      model_type: 'FLOW',
+      count: 1,
+      dtype: 'torch.bfloat16'
+    })
+  })
+
   it('detects a complete Device line even in an oversized chunk', () => {
     // A single large stdout chunk: complete metadata + Device lines, then a
     // huge unterminated tail. The buffer cap must only trim the tail, never
