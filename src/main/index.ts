@@ -1,4 +1,4 @@
-import { app, Menu, ipcMain, net, dialog } from 'electron'
+import { app, Menu, ipcMain, net, dialog, crashReporter } from 'electron'
 import type { BrowserWindow, WebContentsView } from 'electron'
 import type { Tray } from 'electron'
 import path from 'path'
@@ -23,6 +23,8 @@ import {
   recordDashboardSurface
 } from './lib/lastSession'
 import { registerProcessErrorHandlers } from './lib/processErrorHandlers'
+import { initAppLog, flushOperationOutput } from './lib/appLog'
+import { pruneCrashDumps } from './lib/crashDumps'
 import { registerTitleTooltipIpc } from './popups/titleTooltip'
 import { registerTitleCoachmarkIpc } from './popups/titleCoachmark'
 import { openSystemModal, openSystemModalAsync, openSystemModalChoiceAsync, registerSystemModalIpc } from './popups/systemModal'
@@ -149,6 +151,15 @@ import {
 } from './host/panelView'
 
 export type { ComfyPanelKey } from './host/registry'
+
+// Collect native crash minidumps (GPU / renderer / V8 OOM segfaults that
+// never reach a JS handler) into app.getPath('crashDumps'). Kept local — we
+// don't upload, we ask the user to send them. Must start before app ready.
+try {
+  crashReporter.start({ uploadToServer: false })
+} catch {
+  // Never let crash-reporter setup block app startup.
+}
 
 todesktop.init({ autoUpdater: false })
 
@@ -1307,6 +1318,18 @@ if (app.isPackaged && !app.requestSingleInstanceLock()) {
   })
 
   app.whenReady().then(async () => {
+    // Open the durable global app log and install the main-process error
+    // handlers before anything else runs, so the earliest console output and
+    // any startup crash are captured.
+    initAppLog()
+    registerProcessErrorHandlers()
+    // Bound the local crash-dump folder; Crashpad's own pruning is coarse in
+    // upload-disabled mode and a crash-looping user can pile up multi-MB dumps.
+    pruneCrashDumps()
+    console.info(
+      `App started v${APP_VERSION} pid=${process.pid} platform=${process.platform} crashDumps=${app.getPath('crashDumps')}`
+    )
+
     // Test-only hooks for the E2E suite. Registered before any host
     // opens so seeded state (downloads, install-update overrides,
     // app-update state) is visible to the very first title-bar paint.
@@ -1345,7 +1368,6 @@ if (app.isPackaged && !app.requestSingleInstanceLock()) {
 
     migrateXdgPaths()
     persistWinDataRootChoice()
-    registerProcessErrorHandlers()
 
     // Strip Electron's default menu before any BrowserWindow opens so
     // OAuth / cloud-login popups (and every other window) can't reach
@@ -2290,6 +2312,7 @@ if (app.isPackaged && !app.requestSingleInstanceLock()) {
     // restore it. Synchronous: the app exits without awaiting promises, so an
     // async write would be torn down mid-flight and lose a just-made change.
     flushLastSessionSync()
+    flushOperationOutput()
     cleanupTempDownloads()
   })
 

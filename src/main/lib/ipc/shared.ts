@@ -23,6 +23,7 @@ import { deleteDir, formatDeleteStatus } from '../delete'
 import { deleteAction, untrackAction } from '../actions'
 import { _broadcastToRenderer } from './broadcast'
 import { appendLog } from '../logsBroadcast'
+import { flushOperationOutput } from '../appLog'
 import { stripAnsi } from '../stderrTail'
 import {
   spawnProcess, waitForPort, waitForUrl, killProcessTree, killByPort,
@@ -777,6 +778,10 @@ export function _addSession(
 export function _removeSession(installationId: string): void {
   const session = _runningSessions.get(installationId)
   if (!session) return
+  // The session's output stream has ended: flush its buffered tail so a final
+  // unterminated line is durable and a later run for this id can't be appended
+  // onto it.
+  flushOperationOutput(installationId)
   if (session.port) removePortLock(session.port)
   _runningSessions.delete(installationId)
   _broadcastToRenderer('instance-stopped', { installationId })
@@ -1159,6 +1164,9 @@ export async function stopRunning(
     if (session.proc && !session.proc.killed) {
       await killProcessTree(session.proc)
     }
+    // Flush after the kill so shutdown output emitted while dying is captured
+    // and can't bleed into the next run for this id.
+    flushOperationOutput(installationId)
     _stoppingInstallationIds.delete(installationId)
     _broadcastToRenderer('instance-stopped', { installationId })
     sessionLifecycleEvents.emit('changed')
@@ -1180,6 +1188,11 @@ export async function stopRunning(
       }
     }
     await Promise.all(kills)
+    // Flush after the kills so shutdown output is captured and can't bleed
+    // into the next run for these ids.
+    for (const [id] of sessions) {
+      flushOperationOutput(id)
+    }
     for (const [id] of sessions) {
       _stoppingInstallationIds.delete(id)
       _broadcastToRenderer('instance-stopped', { installationId: id })
