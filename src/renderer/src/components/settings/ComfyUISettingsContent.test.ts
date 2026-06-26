@@ -131,7 +131,7 @@ vi.mock('../../views/comfyUISettings/ArgsBuilderPage.vue', () => ({
 }))
 vi.mock('../../views/comfyUISettings/MoreMenu.vue', () => ({
   default: {
-    props: ['open'],
+    props: ['open', 'actions'],
     template: '<div v-if="open" data-testid="more-menu">menu</div>',
   },
 }))
@@ -528,37 +528,114 @@ describe('ComfyUISettingsContent', () => {
       })
     }
 
-    it('labels "Start" and emits restartInPlace=false when not running', async () => {
-      const w = await mountContent({ activeInstallationId: 'inst-1' })
+    // The footer label still follows run-state (Start/Restart/Switch); the emit
+    // now carries the resolved NavDecision instead of a bare boolean.
+    function emittedDecision(wrapper: VueWrapper) {
+      const calls = wrapper.emitted('primary-action') as unknown[][] | undefined
+      return calls?.[0]?.[0] as { window: string; verb: string } | undefined
+    }
+
+    it('labels "Start" and emits a same-window switch decision when not running', async () => {
+      // Dashboard host (no active install) selecting a stopped local install.
+      const w = await mountContent({ currentView: 'dashboard', currentCategory: null, activeInstallationId: null })
       expect(w.find('.settings-v2-relaunch').text()).toBe('Start')
       await w.find('.settings-v2-relaunch').trigger('click')
-      expect(w.emitted('primary-action')).toEqual([[false]])
+      expect(emittedDecision(w)).toMatchObject({ window: 'same', verb: 'switch' })
     })
 
-    it('labels "Restart" and emits restartInPlace=true when running in THIS window', async () => {
+    it('labels "Restart" and emits a restart decision when running in THIS window', async () => {
+      // An install running in this window IS an instance host (computeViewKind).
       markRunning('inst-1')
-      const w = await mountContent({ activeInstallationId: 'inst-1' })
+      const w = await mountContent({ currentView: 'instance', currentCategory: 'local', activeInstallationId: 'inst-1' })
       expect(w.find('.settings-v2-relaunch').text()).toBe('Restart')
       await w.find('.settings-v2-relaunch').trigger('click')
-      expect(w.emitted('primary-action')).toEqual([[true]])
+      expect(emittedDecision(w)).toMatchObject({ window: 'same', verb: 'restart' })
     })
 
-    it('labels "Switch" and emits restartInPlace=false when running in ANOTHER window', async () => {
-      // Host attached to 'other'; selected 'inst-1' runs elsewhere.
+    it('labels "Switch" and emits a focus decision when running in ANOTHER window', async () => {
+      // Host attached to 'other'; selected 'inst-1' runs elsewhere → focus it.
       markRunning('inst-1')
-      const w = await mountContent({ activeInstallationId: 'other' })
+      const w = await mountContent({ currentView: 'instance', currentCategory: 'local', activeInstallationId: 'other' })
       expect(w.find('.settings-v2-relaunch').text()).toBe('Switch')
       await w.find('.settings-v2-relaunch').trigger('click')
-      expect(w.emitted('primary-action')).toEqual([[false]])
+      expect(emittedDecision(w)).toMatchObject({ verb: 'focus' })
     })
 
     it('treats a running install as "Switch" on an install-less (dashboard) host', async () => {
-      // No activeInstallationId → no in-place session to restart, so always Switch.
+      // No activeInstallationId → no in-place session to restart, so Switch/focus.
       markRunning('inst-1')
-      const w = await mountContent({ activeInstallationId: null })
+      const w = await mountContent({ currentView: 'dashboard', currentCategory: null, activeInstallationId: null })
       expect(w.find('.settings-v2-relaunch').text()).toBe('Switch')
       await w.find('.settings-v2-relaunch').trigger('click')
-      expect(w.emitted('primary-action')).toEqual([[false]])
+      expect(emittedDecision(w)).toMatchObject({ verb: 'focus' })
+    })
+  })
+
+  // A running-elsewhere target (verb `focus`) can't open a second window, so the
+  // caret offers Stop (remote, which has a stop action) or nothing (cloud, which
+  // doesn't) — never "Open in new window".
+  describe('caret for a running-elsewhere target', () => {
+    function markRunning(installId: string): void {
+      useSessionStore().runningInstances.set(installId, {
+        installationId: installId,
+        installationName: 'X',
+        mode: '',
+      })
+    }
+    // The caret split-button (and its MoreMenu) render only when caretActions is
+    // non-empty. Read the caret menu's `actions` prop; the caret carries `stop`
+    // or `nav:*` ids, distinguishing it from the pinBottom More menu.
+    function caretActions(wrapper: VueWrapper): { id: string }[] | undefined {
+      if (!wrapper.find('.settings-v2-cta-caret').exists()) return undefined
+      const menu = wrapper
+        .findAllComponents({ name: 'MoreMenu' })
+        .map((m) => m.props('actions') as { id: string }[] | undefined)
+        .find((acts) => acts?.some((a) => a.id === 'stop' || a.id.startsWith('nav:')))
+      return menu
+    }
+
+    it('remote running elsewhere → caret offers Stop, not "Open in new window"', async () => {
+      // Remote install gets a `stop` action (only cloud is excluded).
+      useComfyUISettingsState.pinBottomActions.value = [{ id: 'stop', label: 'Stop' }]
+      markRunning('inst-1')
+      const w = await mountContent({
+        currentView: 'instance',
+        currentCategory: 'local',
+        activeInstallationId: 'other',
+        installation: { ...SAMPLE_INSTALL, sourceCategory: 'remote' },
+      })
+      expect(w.find('.settings-v2-relaunch').text()).toBe('Switch')
+      const actions = caretActions(w)
+      expect(actions?.map((a) => a.id)).toEqual(['stop'])
+    })
+
+    it('cloud running elsewhere → no caret (cloud has no stop action)', async () => {
+      // Cloud is excluded from the synthetic Stop action, so no caret at all.
+      useComfyUISettingsState.pinBottomActions.value = []
+      markRunning('inst-1')
+      const w = await mountContent({
+        currentView: 'instance',
+        currentCategory: 'local',
+        activeInstallationId: 'other',
+        installation: { ...SAMPLE_INSTALL, sourceCategory: 'cloud' },
+      })
+      expect(w.find('.settings-v2-relaunch').text()).toBe('Switch')
+      expect(w.find('.settings-v2-cta-caret').exists()).toBe(false)
+    })
+
+    it('stopped cloud target (dashboard host) → caret still offers "Open in new window"', async () => {
+      // Not running → a new window IS openable, so the nav caret stays. The
+      // dashboard→cloud(stopped) cell is the one that carries the new-window
+      // secondary (instance→cloud(stopped) is primary open-new, no caret).
+      useComfyUISettingsState.pinBottomActions.value = []
+      const w = await mountContent({
+        currentView: 'dashboard',
+        currentCategory: null,
+        activeInstallationId: null,
+        installation: { ...SAMPLE_INSTALL, sourceCategory: 'cloud' },
+      })
+      const actions = caretActions(w)
+      expect(actions?.some((a) => a.id.startsWith('nav:'))).toBe(true)
     })
   })
 
