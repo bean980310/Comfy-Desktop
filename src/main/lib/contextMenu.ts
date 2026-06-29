@@ -2,6 +2,14 @@ import { Menu, clipboard, shell } from 'electron'
 import type { BrowserWindow } from 'electron'
 import * as i18n from './i18n'
 
+export interface ContextMenuHooks {
+  /** Fired right before the native menu is shown. Used by auto-dismissing
+   *  popups to suspend blur-dismiss so the menu doesn't close its own host. */
+  onMenuOpen?: () => void
+  /** Fired once the native menu closes (selection made or dismissed). */
+  onMenuClose?: () => void
+}
+
 /** Actions wired to the menu items; injected so the builder stays pure/testable. */
 export interface ContextMenuActions {
   saveImage: (srcURL: string) => void
@@ -76,6 +84,7 @@ export function buildContextMenuItems(
 export function attachContextMenu(
   comfyWindow: BrowserWindow,
   webContents?: Electron.WebContents,
+  hooks?: ContextMenuHooks,
 ): void {
   const wc = webContents || comfyWindow.webContents
   wc.on('context-menu', (_event, params) => {
@@ -90,6 +99,10 @@ export function attachContextMenu(
 
     if (menuItems.length === 0) return
 
-    Menu.buildFromTemplate(menuItems).popup({ window: comfyWindow })
+    hooks?.onMenuOpen?.()
+    Menu.buildFromTemplate(menuItems).popup({
+      window: comfyWindow,
+      callback: () => hooks?.onMenuClose?.(),
+    })
   })
 }
