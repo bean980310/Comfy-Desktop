@@ -228,8 +228,8 @@ function hideApp(): void {
     if (anyVisible) entry.window.hide()
     else entry.window.show()
   }
-  if (anyVisible) app.hide()
-  else app.show()
+  if (anyVisible) app.dock?.hide()
+  else app.dock?.show()
 }
 
 function quitApp(): void {
@@ -1334,7 +1334,7 @@ if (app.isPackaged && !app.requestSingleInstanceLock()) {
 
   app.whenReady().then(async () => {
     if (process.platform === 'darwin') {
-      const icon = nativeImage.createFromPath(path.join(__dirname, '../../assets/Comfy_Logo_x16.png'))
+      const icon = nativeImage.createFromPath(path.join(__dirname, '../../assets/Comfy_Logo_x16_BW.png'))
       tray = new Tray(icon)
       updateTrayMenu()
     } else {
