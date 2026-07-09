@@ -1,6 +1,7 @@
 import { app, Menu, ipcMain, net, dialog, crashReporter, nativeTheme } from 'electron'
 import type { BrowserWindow, WebContentsView } from 'electron'
-import type { Tray } from 'electron'
+import { Tray } from 'electron'
+import { nativeImage } from 'electron'
 import path from 'path'
 import fs from 'fs'
 import { normaliseFirstUseMode } from '../shared/firstUseMode'
@@ -167,7 +168,7 @@ const APP_VERSION = getAppVersion()
 
 // The chooser host window plus per-install ComfyUI windows are the
 // only top-level surfaces.
-let tray: Tray | null = null
+let tray: Tray | null
 
 /** Stop handle for the periodic release-cache poll registered in
  *  `whenReady`. Cleared in `before-quit` so the interval doesn't
@@ -181,7 +182,7 @@ function focusExternalProcessWindow(pid: number): void {
     const vbsPath = path.join(app.getPath('temp'), `comfy-focus-${pid}.vbs`)
     fs.writeFileSync(vbsPath, `CreateObject("WScript.Shell").AppActivate ${pid}`)
     execFile('wscript.exe', ['//Nologo', '//B', vbsPath], { windowsHide: true }, () => {
-      fs.unlink(vbsPath, () => {})
+      fs.unlink(vbsPath, () => { })
     })
   } else if (process.platform === 'darwin') {
     execFile(
@@ -190,7 +191,7 @@ function focusExternalProcessWindow(pid: number): void {
         '-e',
         `tell application "System Events" to set frontmost of (first process whose unix id is ${pid}) to true`
       ],
-      () => {}
+      () => { }
     )
   }
 }
@@ -206,6 +207,8 @@ function updateTrayMenu(): void {
       }
     },
     { type: 'separator' },
+    { label: i18n.t('tray.hide'), click: () => hideApp() },
+    { type: 'separator' },
     { label: i18n.t('tray.quit'), click: () => quitApp() }
   ])
   tray.setContextMenu(contextMenu)
@@ -216,6 +219,13 @@ function updateTrayMenu(): void {
 // state and `updateTrayMenu()` (a no-op when tray is null) are kept so
 // that `onLocaleChanged: updateTrayMenu` and the `before-quit` cleanup
 // path stay valid without conditional churn for the eventual restore.
+
+function hideApp(): void {
+  for (const [, entry] of comfyWindows) {
+    if (entry.window.isVisible()) entry.window.hide()
+  }
+  app.hide()
+}
 
 function quitApp(): void {
   setQuitReason('user-quit')
@@ -586,7 +596,7 @@ function onLaunch({
         await showSplashPage(comfyContents, SPLASH_DARK, {
           title: i18n.t('launch.launchSplashTitle'),
           desc: i18n.t('launch.launchSplashDesc'),
-        }).catch(() => {})
+        }).catch(() => { })
         if (
           // A newer relaunch superseded this one during the splash paint —
           // let it own the reveal/navigation so they don't both fire.
@@ -604,7 +614,7 @@ function onLaunch({
           return
         }
         revealReusedComfy()
-        void comfyContents.loadURL(comfyUrl).catch(() => {})
+        void comfyContents.loadURL(comfyUrl).catch(() => { })
       })()
     } else {
       revealReusedComfy()
@@ -866,7 +876,7 @@ function _broadcastAppUpdateStateToTitleBars(state: updater.AppUpdateState): voi
     if (wc.isDestroyed()) continue
     try {
       wc.send('comfy-titlebar:app-update-state-changed', state)
-    } catch {}
+    } catch { }
   }
 }
 
@@ -1318,6 +1328,13 @@ if (app.isPackaged && !app.requestSingleInstanceLock()) {
   })
 
   app.whenReady().then(async () => {
+    if (process.platform === 'darwin') {
+      const icon = nativeImage.createFromPath(path.join(__dirname, '../../assets/Comfy_Logo_x16.png'))
+      tray = new Tray(icon)
+      updateTrayMenu()
+    } else {
+      tray = null
+    }
     // Open the durable global app log and install the main-process error
     // handlers before anything else runs, so the earliest console output and
     // any startup crash are captured.
@@ -1381,7 +1398,7 @@ if (app.isPackaged && !app.requestSingleInstanceLock()) {
     // pill / Global Settings panel), so no new update logic is added.
     installAppMenu(process.platform, undefined, {
       onCheckForUpdates: () => {
-        void updater.runCheck('app-menu').catch(() => {})
+        void updater.runCheck('app-menu').catch(() => { })
       }
     })
 
@@ -2004,9 +2021,9 @@ if (app.isPackaged && !app.requestSingleInstanceLock()) {
               const abort = new AbortController()
               source
                 .handleAction('check-update', next, undefined, {
-                  update: (data) => updateInstallation(installationId, data).then(() => {}),
-                  sendProgress: () => {},
-                  sendOutput: () => {},
+                  update: (data) => updateInstallation(installationId, data).then(() => { }),
+                  sendProgress: () => { },
+                  sendOutput: () => { },
                   signal: abort.signal
                 })
                 .catch((err) => {
@@ -2037,9 +2054,9 @@ if (app.isPackaged && !app.requestSingleInstanceLock()) {
           if (!source) return { ok: false, message: 'Unknown source.' }
           const abort = new AbortController()
           const result = await source.handleAction(actionId, inst, actionData, {
-            update: (data) => updateInstallation(installationId, data).then(() => {}),
-            sendProgress: () => {},
-            sendOutput: () => {},
+            update: (data) => updateInstallation(installationId, data).then(() => { }),
+            sendProgress: () => { },
+            sendOutput: () => { },
             signal: abort.signal
           })
           return {
