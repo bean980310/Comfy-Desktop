@@ -223,6 +223,7 @@ function updateTrayMenu(): void {
 function hideApp(): void {
   for (const [, entry] of comfyWindows) {
     if (entry.window.isVisible()) entry.window.hide()
+    else entry.window.show()
   }
   app.hide()
 }
