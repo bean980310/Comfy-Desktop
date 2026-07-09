@@ -221,10 +221,15 @@ function updateTrayMenu(): void {
 // path stay valid without conditional churn for the eventual restore.
 
 function hideApp(): void {
+  const anyVisible = Array.from(comfyWindows.values()).some(
+    (entry) => entry.window.isVisible()
+  )
   for (const [, entry] of comfyWindows) {
-    if (entry.window.isVisible()) entry.window.hide()
+    if (anyVisible) entry.window.hide()
     else entry.window.show()
   }
+  if (anyVisible) app.hide()
+  else app.show()
 }
 
 function quitApp(): void {
