@@ -2170,7 +2170,7 @@ if (app.isPackaged && !app.requestSingleInstanceLock()) {
     registerDownloadHandlers()
     registerAssetDownloadHandlers({ findInstallationIdForWindow })
     cleanupTempDownloads()
-    ipc.register({
+    await ipc.register({
       onLaunch,
       onStop,
       onComfyExited,
