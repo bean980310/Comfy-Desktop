@@ -641,6 +641,8 @@
   },
   "tray": {
     "showApp": "显示 Comfy Desktop",
+    "hide": "隐藏到托盘",
+    "show": "显示窗口",
     "quit": "退出"
   },
   "actions": {

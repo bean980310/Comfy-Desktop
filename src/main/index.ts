@@ -168,7 +168,9 @@ const APP_VERSION = getAppVersion()
 
 // The chooser host window plus per-install ComfyUI windows are the
 // only top-level surfaces.
-let tray: Tray | null
+let tray: Tray | null = null
+
+let isVisible: boolean = false
 
 /** Stop handle for the periodic release-cache poll registered in
  *  `whenReady`. Cleared in `before-quit` so the interval doesn't
@@ -195,10 +197,13 @@ function focusExternalProcessWindow(pid: number): void {
     )
   }
 }
+
 function updateTrayMenu(): void {
   if (!tray) return
   // The install-less chooser host is the primary surface. "Show
   // App" focuses the chooser host.
+
+  const hideOrShowLabel = isVisible ? i18n.t('tray.hide') : i18n.t('tray.show')
   const contextMenu = Menu.buildFromTemplate([
     {
       label: i18n.t('tray.showApp'),
@@ -207,11 +212,27 @@ function updateTrayMenu(): void {
       }
     },
     { type: 'separator' },
-    { label: i18n.t('tray.hide'), click: () => hideApp() },
+    {
+      label: hideOrShowLabel, click: () => {
+        isVisible = !isVisible
+        hideOrShowWindow()
+      }
+    },
     { type: 'separator' },
     { label: i18n.t('tray.quit'), click: () => quitApp() }
   ])
   tray.setContextMenu(contextMenu)
+}
+
+function createTray(): void {
+  if (tray) return
+
+  const icon = nativeImage.createFromPath(path.join(__dirname, '../../assets/Comfy_Logo_x16_BW.png'))
+  tray = new Tray(icon)
+  tray.setToolTip('Comfy Desktop')
+  isVisible = true
+  updateTrayMenu()
+  tray.on('double-click', () => openOrFocusChooserHostWindow())
 }
 
 // `createTray()` has been removed while docking-to-tray is disabled —
@@ -220,16 +241,20 @@ function updateTrayMenu(): void {
 // that `onLocaleChanged: updateTrayMenu` and the `before-quit` cleanup
 // path stay valid without conditional churn for the eventual restore.
 
-function hideApp(): void {
-  const anyVisible = Array.from(comfyWindows.values()).some(
-    (entry) => entry.window.isVisible()
-  )
+
+
+function hideOrShowWindow(): void {
   for (const [, entry] of comfyWindows) {
-    if (anyVisible) entry.window.hide()
-    else entry.window.show()
+    if (anyVisible()) {
+      entry.window.hide()
+      app.dock?.hide()
+    }
+    else {
+      entry.window.show()
+      app.dock?.show()
+    }
   }
-  if (anyVisible) app.dock?.hide()
-  else app.dock?.show()
+  updateTrayMenu()
 }
 
 function quitApp(): void {
@@ -244,6 +269,13 @@ function quitApp(): void {
     tray = null
   }
   app.quit()
+}
+
+function anyVisible(): boolean {
+  for (const [, entry] of comfyWindows) {
+    if (entry.window.isVisible()) return true
+  }
+  return false
 }
 
 /** Restore windows are opened hidden and revealed only once their launch
@@ -1333,13 +1365,6 @@ if (app.isPackaged && !app.requestSingleInstanceLock()) {
   })
 
   app.whenReady().then(async () => {
-    if (process.platform === 'darwin') {
-      const icon = nativeImage.createFromPath(path.join(__dirname, '../../assets/Comfy_Logo_x16_BW.png'))
-      tray = new Tray(icon)
-      updateTrayMenu()
-    } else {
-      tray = null
-    }
     // Open the durable global app log and install the main-process error
     // handlers before anything else runs, so the earliest console output and
     // any startup crash are captured.
@@ -2170,6 +2195,9 @@ if (app.isPackaged && !app.requestSingleInstanceLock()) {
     registerDownloadHandlers()
     registerAssetDownloadHandlers({ findInstallationIdForWindow })
     cleanupTempDownloads()
+    if (process.platform === 'darwin') {
+      createTray()
+    }
     await ipc.register({
       onLaunch,
       onStop,
